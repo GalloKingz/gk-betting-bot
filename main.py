@@ -135,7 +135,7 @@ async def daily_bet_task():
     await channel.send(embed=embed_bet)
 
 
-# --- MODULO POP-UP AGGIORNATO (CON CODICE E MINIMO 5€) ---
+# --- MODULO POP-UP OTTIMIZZATO SENZA TIMEOUT ---
 
 class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
     initial_cash = discord.ui.TextInput(
@@ -155,53 +155,47 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        # Risposta immediata per evitare qualsiasi timeout di Discord
+        await interaction.response.defer(ephemeral=True)
+        
         guild = interaction.guild
         
         # Controllo limite massimo 10 stanze
         existing_rooms = [ch for ch in guild.channels if ch.name.startswith("bet-")]
         if len(existing_rooms) >= 10:
-            await interaction.response.send_message("❌ Raggiunto il limite massimo di 10 stanze Bet attive!", ephemeral=True)
+            await interaction.followup.send("❌ Raggiunto il limite massimo di 10 stanze Bet attive!", ephemeral=True)
             return
 
         # Validazione importo cassa (minimo 5€)
         try:
             cassa_valore = float(self.initial_cash.value.replace(",", "."))
             if cassa_valore < 5.0:
-                await interaction.response.send_message("❌ La cassa iniziale deve essere di almeno **5€**!", ephemeral=True)
+                await interaction.followup.send("❌ La cassa iniziale deve essere di almeno **5€**!", ephemeral=True)
                 return
         except ValueError:
-            await interaction.response.send_message("❌ Inserisci un importo numerico valido per la cassa!", ephemeral=True)
+            await interaction.followup.send("❌ Inserisci un importo numerico valido per la cassa!", ephemeral=True)
             return
 
         # Gestione modalità (solo o insieme)
         modalita = self.mode_type.value.strip().lower()
         if modalita not in ["solo", "insieme"]:
-            await interaction.response.send_message("❌ Nel campo modalità devi scrivere esattamente **'solo'** oppure **'insieme'**!", ephemeral=True)
+            await interaction.followup.send("❌ Nel campo modalità devi scrivere esattamente **'solo'** oppure **'insieme'**!", ephemeral=True)
             return
 
         category = interaction.channel.category
         
-        # Generazione codice casuale di 4 caratteri alfanumerici (es. bet-4f9a)
+        # Generazione codice casuale di 4 caratteri (es. bet-4f9a)
         random_code = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
         channel_full_name = f"bet-{random_code}"
 
-        # Configurazione permessi in base alla scelta
-        if modalita == "solo":
-            overwrites = {
-                guild.default_role: discord.PermissionOverwrite(read_messages=False),
-                interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
-                guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
-            }
-            info_mode = "👤 Modalità Singola (Visibile solo a te)"
-        else:
-            # Se è "insieme", chiunque abbia accesso alla categoria o un amico menzionato può entrare, oppure lasciamo visibile ai ruoli/amici (o aperta nel canale privato)
-            # Qui diamo accesso alla categoria ma creiamo la stanza privata per chi l'ha avviata (il tuo amico può essere aggiunto con un comando o abilitato)
-            overwrites = {
-                guild.default_role: discord.PermissionOverwrite(read_messages=False),
-                interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
-                guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
-            }
-            info_mode = "👥 Modalità Insieme (Usa 'Aggiungi membri' se vuoi fare entrare il tuo socio)"
+        # Configurazione permessi
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
+        }
+        
+        info_mode = "👤 Modalità Singola (Visibile solo a te)" if modalita == "solo" else "👥 Modalità Insieme"
 
         channel = await guild.create_text_channel(name=channel_full_name, category=category, overwrites=overwrites)
         active_pyramids[channel.id] = {"cassa": cassa_valore, "giocata_attiva": 0.0}
@@ -223,7 +217,7 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
         embed.add_field(name="Cassa Iniziale", value=f"{round(cassa_valore, 2)}€", inline=False)
         await channel.send(content=f"{interaction.user.mention}", embed=embed)
 
-        await interaction.response.send_message(f"✅ Stanza creata con successo: {channel.mention}", ephemeral=True)
+        await interaction.followup.send(f"✅ Stanza creata con successo: {channel.mention}", ephemeral=True)
 
 
 class PyramidView(discord.ui.View):
