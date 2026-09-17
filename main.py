@@ -26,11 +26,9 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
-
-# Nome del canale Discord
 TARGET_CHANNEL_NAME = "partite-e-pronostici" 
 
-# Mappa delle Leghe e delle Coppe Europee
+# Mappa delle Leghe
 LEAGUES = {
     "Champions League": "soccer_uefa_champions_league",
     "Europa League": "soccer_uefa_europa_league",
@@ -45,44 +43,36 @@ LEAGUES = {
     "Saudi Pro League": "soccer_saudi_pro_league"
 }
 
+# Dizionario in memoria per tracciare le casse delle stanze temporali {channel_id: {"cassa": float, "giocata_attiva": float}}
+active_pyramids = {}
+
 @bot.event
 async def on_ready():
     print(f"Bot connesso con successo come {bot.user}")
     if not daily_bet_task.is_running():
         daily_bet_task.start()
 
-# Task automatico giornaliero
+# Task automatico giornaliero per #partite-e-pronostici
 @tasks.loop(hours=24)
 async def daily_bet_task():
     await bot.wait_until_ready()
-    
     channel = discord.utils.get(bot.get_all_channels(), name=TARGET_CHANNEL_NAME)
     if not channel:
-        print(f"Canale {TARGET_CHANNEL_NAME} non trovato!")
         return
 
-    print("Esecuzione task automatico giornaliero...")
-
-    # 1. Pulizia della stanza
     try:
         await channel.purge(limit=100)
-        print("Canale pulito con successo.")
-    except Exception as e:
-        print(f"Errore durante la pulizia del canale: {e}")
+    except Exception:
+        pass
 
     if not ODDS_API_KEY:
-        await channel.send("Chiave API Odds non configurata.")
         return
 
     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    
     cassaforte = []
     colpaccio = []
-    
-    # Valori di partenza per il calcolo delle vincite (puntata fissa di 5€)
     vincita_cassaforte = 5.0
     vincita_colpaccio = 5.0
-    
     matches_collected = 0
     found_any_matches = False
 
@@ -103,11 +93,9 @@ async def daily_bet_task():
                     todays_matches.append(f"• {home} vs {away}")
                     found_any_matches = True
 
-                    # Estrazione quote per popolare i pronostici
                     if matches_collected < 4:
                         odd_home = 1.28
                         odd_away = 2.10
-                        
                         bookmakers = match.get("bookmakers", [])
                         if bookmakers:
                             try:
@@ -120,18 +108,11 @@ async def daily_bet_task():
                             except Exception:
                                 pass
 
-                        # Quote fisse o dinamiche per le due giocate
-                        q_cassa = 1.28
-                        q_colpo = odd_away
+                        cassaforte.append(f"• **{home} vs {away}** ({league_name}) ➔ **1X** @1.28")
+                        vincita_cassaforte *= 1.28
 
-                        # Aggiunge alla Cassaforte
-                        cassaforte.append(f"• **{home} vs {away}** ({league_name}) ➔ **1X** @{q_cassa}")
-                        vincita_cassaforte *= q_cassa
-
-                        # Aggiunge al Colpaccio
-                        colpaccio.append(f"• **{home} vs {away}** ({league_name}) ➔ **1 + Over 1.5** @{q_colpo}")
-                        vincita_colpaccio *= q_colpo
-                        
+                        colpaccio.append(f"• **{home} vs {away}** ({league_name}) ➔ **1 + Over 1.5** @{odd_away}")
+                        vincita_colpaccio *= odd_away
                         matches_collected += 1
 
                 if todays_matches:
@@ -140,40 +121,160 @@ async def daily_bet_task():
             continue
 
     if not found_any_matches:
-        embed_matches.description = "Nessuna partita in programma esattamente per oggi tra coppe e campionati monitorati."
+        embed_matches.description = "Nessuna partita in programma oggi."
 
-    # Invia la lista delle partite
     await channel.send(embed=embed_matches)
 
-    # Invia i pronostici con le vincite potenziali separate per entrambe le schedine
     embed_bet = discord.Embed(title=f"🔥 PRONOSTICI DEL GIORNO ({today_str})", color=discord.Color.gold())
+    valore_cassa = "\n".join(cassaforte) + f"\n\n💰 **Vincita Potenziale con 5€:** `{round(vincita_cassaforte, 2)}€`" if cassaforte else "Nessun match."
+    embed_bet.add_field(name="🛡️ LA CASSAFORTE (Alta Probabilità)", value=valore_cassa, inline=False)
     
-    valore_cassa = "\n".join(cassaforte) + f"\n\n💰 **Vincita Potenziale con 5€:** `{round(vincita_cassaforte, 2)}€`" if cassaforte else "Nessun match ideale oggi."
-    embed_bet.add_field(
-        name="🛡️ LA CASSAFORTE (Alta Probabilità)", 
-        value=valore_cassa, 
-        inline=False
-    )
-    
-    valore_colpo = "\n".join(colpaccio) + f"\n\n💰 **Vincita Potenziale con 5€:** `{round(vincita_colpaccio, 2)}€`" if colpaccio else "Nessun match disponibile per oggi."
-    embed_bet.add_field(
-        name="🚀 IL COLPACCIO (Schedina 5€)", 
-        value=valore_colpo, 
-        inline=False
-    )
+    valore_colpo = "\n".join(colpaccio) + f"\n\n💰 **Vincita Potenziale con 5€:** `{round(vincita_colpaccio, 2)}€`" if colpaccio else "Nessun match."
+    embed_bet.add_field(name="🚀 IL COLPACCIO (Schedina 5€)", value=valore_colpo, inline=False)
 
     await channel.send(embed=embed_bet)
 
-@bot.command(name="news")
-async def get_news(ctx):
-    feed_url = "https://www.gazzetta.it/rss/Calcio.xml"
-    feed = feedparser.parse(feed_url)
+
+# --- SISTEMA GESTIONE PIRAMIDE (STANZE TEMPORANEE) ---
+
+class PyramidView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="➕ Nuova Schedina Piramidale", style=discord.ButtonStyle.green, custom_id="btn_nuova_piramide")
+    async def create_pyramid_room(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        
+        # Controllo limite massimo di 10 stanze temporali attive
+        existing_rooms = [ch for ch in guild.channels if ch.name.startswith("piramide-")]
+        if len(existing_rooms) >= 10:
+            await interaction.response.send_message("❌ Raggiunto il limite massimo di 10 stanze piramidali attive!", ephemeral=True)
+            return
+
+        # Trova la categoria corrente o la crea
+        category = interaction.channel.category
+        
+        # Configurazione permessi (Visibile solo all'utente che clicca e al bot)
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
+        }
+
+        # Crea il canale temporaneo
+        room_name = f"piramide-{interaction.user.name}"
+        channel = await guild.create_text_channel(name=room_name, category=category, overwrites=overwrites)
+        
+        # Inizializza la cassa di questa stanza (es. 20€ iniziali)
+        active_pyramids[channel.id] = {"cassa": 20.0, "giocata_attiva": 0.0}
+
+        # Messaggio guida all'interno della stanza
+        embed = discord.Embed(
+            title="💎 Sessione Piramidale Attivata",
+            description=(
+                "Benvenuti nella vostra stanza privata per la gestione della piramide.\n\n"
+                "**Comandi disponibili:**\n"
+                "• `!gioca [importo]` ➔ Scala l'importo dalla cassa e registra la giocata.\n"
+                "• `!vinto [importo_vincita]` ➔ Registra la vincita e aggiorna la cassa.\n"
+                "• `!perso` ➔ Registra la perdita (se sei in plus la stanza resta aperta).\n"
+                "• `!soldi` ➔ Mostra lo stato attuale della cassa nella stanza.\n"
+                "• `!out` ➔ Preleva i profitti e chiude definitivamente la stanza."
+            ),
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="Cassa Iniziale", value="20.00€", inline=False)
+        await channel.send(content=f"{interaction.user.mention}", embed=embed)
+
+        await interaction.response.send_message(f"✅ Stanza creata con successo: {channel.mention}", ephemeral=True)
+
+
+# Comando per generare il pannello con il bottone nella categoria
+@bot.command(name="setup_piramide")
+@commands.has_permissions(administrator=True)
+async def setup_piramide(ctx):
+    embed = discord.Embed(
+        title="💎 GESTIONE PIRAMIDE BETS",
+        description="Clicca sul bottone sottostante per aprire una stanza temporale privata e avviare un nuovo ciclo di scommesse piramidali.",
+        color=discord.Color.gold()
+    )
+    view = PyramidView()
+    await ctx.send(embed=embed, view=view)
+    await ctx.message.delete()
+
+
+# --- COMANDI DELLA STANZA PIRAMIDALE ---
+
+@bot.command(name="gioca")
+async def cmd_gioca(ctx, importo: float = None):
+    if ctx.channel.id not in active_pyramids:
+        return
     
-    embed = discord.Embed(title="⚽ Ultime Notizie Calcio", color=discord.Color.blue())
-    for entry in feed.entries[:5]:
-        embed.add_field(name=entry.title, value=f"[Leggi la notizia]({entry.link})", inline=False)
+    if importo is None:
+        await ctx.send("❌ Specifica l'importo giocato. Esempio: `!gioca 10`")
+        return
+
+    data = active_pyramids[ctx.channel.id]
+    if importo > data["cassa"]:
+        await ctx.send(f"❌ Non hai abbastanza fondi in cassa! Disponibili: `{data['cassa']}€`")
+        return
+
+    data["cassa"] -= importo
+    data["giocata_attiva"] = importo
+    await ctx.send(f"✅ **Schedina registrata!** Puntati `{importo}€`. Fondi rimanenti in cassa: `{round(data['cassa'], 2)}€`")
+
+
+@bot.command(name="vinto")
+async def cmd_vinto(ctx, vincita_totale: float = None):
+    if ctx.channel.id not in active_pyramids:
+        return
+        
+    if vincita_totale is None:
+        await ctx.send("❌ Specifica l'importo totale vinto. Esempio: `!vinto 35.50`")
+        return
+
+    data = active_pyramids[ctx.channel.id]
+    data["cassa"] += vincita_totale
+    await ctx.send(f"🎉 **VITTORIA REGISTRATA!** Incassati `{vincita_totale}€`. **Cassa aggiornata totale:** `{round(data['cassa'], 2)}€`")
+
+
+@bot.command(name="perso")
+async def cmd_perso(ctx):
+    if ctx.channel.id not in active_pyramids:
+        return
+
+    data = active_pyramids[ctx.channel.id]
+    data["giocata_attiva"] = 0.0
     
-    await ctx.send(embed=embed)
+    await ctx.send(f"⚠️ Schedina persa registrata. Cassa attuale rimasta: `{round(data['cassa'], 2)}€`")
+    if data["cassa"] <= 0:
+        await ctx.send("❌ Cassa a zero! Digita `!out` per chiudere la sessione.")
+    else:
+        await ctx.send("💪 Sei ancora in plus/gioco! La stanza rimane aperta per il prossimo livello della piramide.")
+
+
+@bot.command(name="soldi")
+async def cmd_soldi(ctx):
+    if ctx.channel.id not in active_pyramids:
+        return
+    data = active_pyramids[ctx.channel.id]
+    await ctx.send(f"📊 **Stato Cassa Attuale:** `{round(data['cassa'], 2)}€`")
+
+
+@bot.command(name="out")
+async def cmd_out(ctx):
+    if ctx.channel.id not in active_pyramids:
+        return
+    
+    data = active_pyramids[ctx.channel.id]
+    saldo_finale = data["cassa"]
+    
+    await ctx.send(f"🔒 **Sessione chiusa.** Prelevati/Chiusi con un totale di `{round(saldo_finale, 2)}€`. La stanza verrà eliminata tra 5 secondi...")
+    
+    # Rimuove dai registri e cancella il canale dopo 5 secondi
+    del active_pyramids[ctx.channel.id]
+    await asyncio.sleep(5)
+    await ctx.channel.delete()
+
 
 async def main():
     await start_web_server()
