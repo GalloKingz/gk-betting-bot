@@ -25,6 +25,7 @@ async def start_web_server():
 # Inizializzazione Bot Discord
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True  # Necessario per leggere la lista degli utenti del server
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
@@ -135,7 +136,7 @@ async def daily_bet_task():
     await channel.send(embed=embed_bet)
 
 
-# --- MODULO POP-UP OTTIMIZZATO SENZA TIMEOUT ---
+# --- FLUSSO INTERATTIVO: MODALE + SELEZIONE UTENTI A TENDINA ---
 
 class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
     initial_cash = discord.ui.TextInput(
@@ -145,28 +146,11 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
         max_length=5,
         required=True
     )
-    
-    mode_type = discord.ui.TextInput(
-        label="Modalità (Scrivi 'solo' o 'insieme')",
-        placeholder="solo / insieme",
-        min_length=3,
-        max_length=8,
-        required=True
-    )
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Risposta immediata per evitare qualsiasi timeout di Discord
         await interaction.response.defer(ephemeral=True)
         
-        guild = interaction.guild
-        
-        # Controllo limite massimo 10 stanze
-        existing_rooms = [ch for ch in guild.channels if ch.name.startswith("bet-")]
-        if len(existing_rooms) >= 10:
-            await interaction.followup.send("❌ Raggiunto il limite massimo di 10 stanze Bet attive!", ephemeral=True)
-            return
-
-        # Validazione importo cassa (minimo 5€)
+        # Validazione importo cassa
         try:
             cassa_valore = float(self.initial_cash.value.replace(",", "."))
             if cassa_valore < 5.0:
@@ -176,35 +160,80 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
             await interaction.followup.send("❌ Inserisci un importo numerico valido per la cassa!", ephemeral=True)
             return
 
-        # Gestione modalità (solo o insieme)
-        modalita = self.mode_type.value.strip().lower()
-        if modalita not in ["solo", "insieme"]:
-            await interaction.followup.send("❌ Nel campo modalità devi scrivere esattamente **'solo'** oppure **'insieme'**!", ephemeral=True)
+        # Invia il menu a tendina per la selezione utenti (Max 3 partecipanti extra)
+        view = UserSelectView(cassa_valore)
+        await interaction.followup.send(
+            "👥 **Seleziona fino a 3 amici** dal menu a tendina sottostante con cui vuoi condividere la stanza (oppure procedi da solo cliccando direttamente conferma).",
+            view=view,
+            ephemeral=True
+        )
+
+
+class UserSelectDropdown(discord.ui.UserSelect):
+    def __init__(self):
+        super().__init__(
+            placeholder="Seleziona fino a 3 compagni di squadra...",
+            min_values=0,
+            max_values=3,
+            row=0
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        # Il view gestirà il salvataggio degli utenti selezionati
+        pass
+
+
+class UserSelectView(discord.ui.View):
+    def __init__(self, cassa_valore):
+        super().__init__(timeout=180)
+        self.cassa_valore = cassa_valore
+        self.user_select = UserSelectDropdown()
+        self.add_item(self.user_select)
+
+    @discord.ui.button(label="Conferma e Crea Stanza", style=discord.ButtonStyle.green, row=1)
+    async def confirm_creation(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+
+        # Controllo limite massimo 10 stanze attive
+        existing_rooms = [ch for ch in guild.channels if ch.name.startswith("bet-")]
+        if len(existing_rooms) >= 10:
+            await interaction.followup.send("❌ Raggiunto il limite massimo di 10 stanze Bet attive!", ephemeral=True)
             return
 
-        category = interaction.channel.category
+        # Raccoglie gli utenti selezionati dal menu a tendina
+        selected_users = self.user_select.values
         
-        # Generazione codice casuale di 4 caratteri (es. bet-4f9a)
-        random_code = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
-        channel_full_name = f"bet-{random_code}"
-
-        # Configurazione permessi
+        # Configurazione permessi base (Solo admin, bot e creatore)
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
             interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
             guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
         }
-        
-        info_mode = "👤 Modalità Singola (Visibile solo a te)" if modalita == "solo" else "👥 Modalità Insieme"
+
+        # Aggiunge i permessi agli utenti selezionati (evitando duplicati se selezioni te stesso)
+        for user in selected_users:
+            if user.id != interaction.user.id:
+                overwrites[user] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+
+        category = interaction.channel.category
+        random_code = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
+        channel_full_name = f"bet-{random_code}"
 
         channel = await guild.create_text_channel(name=channel_full_name, category=category, overwrites=overwrites)
-        active_pyramids[channel.id] = {"cassa": cassa_valore, "giocata_attiva": 0.0}
+        active_pyramids[channel.id] = {"cassa": self.cassa_valore, "giocata_attiva": 0.0}
+
+        # Lista menzioni partecipanti
+        partecipanti_str = f"• {interaction.user.mention} (Host)"
+        for user in selected_users:
+            if user.id != interaction.user.id:
+                partecipanti_str += f"\n• {user.mention}"
 
         embed = discord.Embed(
             title=f"💎 Sessione Bet [{channel_full_name.upper()}]",
             description=(
-                f"Stanza creata con successo!\n"
-                f"• **Tipo:** {info_mode}\n\n"
+                f"Stanza creata con successo!\n\n"
+                f"👥 **Partecipanti:**\n{partecipanti_str}\n\n"
                 "**Comandi disponibili:**\n"
                 "• `!gioca [importo]` ➔ Scala l'importo dalla cassa e registra la giocata.\n"
                 "• `!vinto [importo_vincita]` ➔ Registra la vincita e aggiorna la cassa.\n"
@@ -214,8 +243,11 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
             ),
             color=discord.Color.blue()
         )
-        embed.add_field(name="Cassa Iniziale", value=f"{round(cassa_valore, 2)}€", inline=False)
-        await channel.send(content=f"{interaction.user.mention}", embed=embed)
+        embed.add_field(name="Cassa Iniziale", value=f"{round(self.cassa_valore, 2)}€", inline=False)
+        
+        # Notifica dentro la nuova stanza menzionando tutti i partecipanti
+        mentions_text = f"{interaction.user.mention} " + " ".join([u.mention for u in selected_users if u.id != interaction.user.id])
+        await channel.send(content=mentions_text, embed=embed)
 
         await interaction.followup.send(f"✅ Stanza creata con successo: {channel.mention}", ephemeral=True)
 
@@ -234,7 +266,7 @@ class PyramidView(discord.ui.View):
 async def setup_piramide(ctx):
     embed = discord.Embed(
         title="💎 GESTIONE PIRAMIDE BETS",
-        description="Clicca sul bottone sottostante per aprire il modulo, impostare il budget iniziale (da 5€ in su) e scegliere la modalità.",
+        description="Clicca sul bottone sottostante per impostare il budget iniziale e scegliere i tuoi compagni di squadra tramite il menu a tendina.",
         color=discord.Color.gold()
     )
     view = PyramidView()
@@ -289,7 +321,7 @@ async def cmd_perso(ctx):
     if data["cassa"] <= 0:
         await ctx.send("❌ Cassa a zero! Digita `!out` per chiudere la sessione.")
     else:
-        await ctx.send("💪 Sei ancora in plus/gioco! La stanza rimane aperta per il prossimo livello della piramide.")
+        await ctx.send("💪 Siete ancora in plus/gioco! La stanza rimane aperta per il prossimo livello della piramide.")
 
 
 @bot.command(name="soldi")
