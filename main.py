@@ -46,7 +46,6 @@ LEAGUES = {
 }
 
 # Dizionario in memoria per tracciare le casse e i partecipanti
-# {channel_id: {"cassa_iniziale": float, "cassa": float, "giocata_attiva": float, "host": discord.Member, "invitati": list}}
 active_pyramids = {}
 
 @bot.event
@@ -174,6 +173,7 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
             await interaction.followup.send("❌ Inserisci un importo numerico valido per la cassa!", ephemeral=True)
             return
 
+        # BLINDATURA PERMESSI: Solo il bot, l'host e gli invitati possono vedere la stanza
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
             interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
@@ -215,7 +215,7 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
 
         embed = discord.Embed(
             title=f"💎 Sessione Bet [{channel_full_name.upper()}]",
-            description=f"Stanza pulita e pronta!\n\n👥 **Partecipanti ({len(invited_list) + 1}/4):**\n{partecipanti_str}",
+            description=f"Stanza privata e protetta!\n\n👥 **Partecipanti ({len(invited_list) + 1}/4):**\n{partecipanti_str}",
             color=discord.Color.blue()
         )
         embed.add_field(name="Cassa Iniziale", value=f"{round(cassa_valore, 2)}€", inline=False)
@@ -224,7 +224,13 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
         mentions_text = f"{interaction.user.mention} " + " ".join([u.mention for u in invited_list])
         await channel.send(content=mentions_text, embed=embed)
 
-        await interaction.followup.send(f"✅ Stanza creata con successo: {channel.mention}", ephemeral=True)
+        # Risposta effimera che si elimina da sola subito dopo
+        msg = await interaction.followup.send(f"✅ Stanza privata creata con successo: {channel.mention}", ephemeral=True)
+        await asyncio.sleep(4)
+        try:
+            await msg.delete()
+        except Exception:
+            pass
 
 
 class PyramidView(discord.ui.View):
