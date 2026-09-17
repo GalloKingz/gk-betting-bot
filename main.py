@@ -25,7 +25,7 @@ async def start_web_server():
 # Inizializzazione Bot Discord
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True  # Necessario per leggere la lista degli utenti del server
+intents.members = True  # Abilitato correttamente dal Developer Portal
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
@@ -136,7 +136,7 @@ async def daily_bet_task():
     await channel.send(embed=embed_bet)
 
 
-# --- FLUSSO INTERATTIVO: MODALE + SELEZIONE UTENTI A TENDINA ---
+# --- FLUSSO INTERATTIVO: MODALE + SELEZIONE UTENTI ANTI-TIMEOUT ---
 
 class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
     initial_cash = discord.ui.TextInput(
@@ -148,6 +148,7 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        # Risposta immediata al modale per evitare timeout
         await interaction.response.defer(ephemeral=True)
         
         # Validazione importo cassa
@@ -160,10 +161,10 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
             await interaction.followup.send("❌ Inserisci un importo numerico valido per la cassa!", ephemeral=True)
             return
 
-        # Invia il menu a tendina per la selezione utenti (Max 3 partecipanti extra)
+        # Invia il menu a tendina tramite followup
         view = UserSelectView(cassa_valore)
         await interaction.followup.send(
-            "👥 **Seleziona fino a 3 amici** dal menu a tendina sottostante con cui vuoi condividere la stanza (oppure procedi da solo cliccando direttamente conferma).",
+            "👥 **Seleziona fino a 3 amici** dal menu a tendina sottostante con cui vuoi condividere la stanza, poi clicca **Conferma e Crea Stanza**.",
             view=view,
             ephemeral=True
         )
@@ -179,8 +180,8 @@ class UserSelectDropdown(discord.ui.UserSelect):
         )
 
     async def callback(self, interaction: discord.Interaction):
-        # Il view gestirà il salvataggio degli utenti selezionati
-        pass
+        # Risposta istantanea alla selezione del menu a tendina per evitare timeout di Discord
+        await interaction.response.defer()
 
 
 class UserSelectView(discord.ui.View):
@@ -192,6 +193,7 @@ class UserSelectView(discord.ui.View):
 
     @discord.ui.button(label="Conferma e Crea Stanza", style=discord.ButtonStyle.green, row=1)
     async def confirm_creation(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Risposta immediata al click del bottone di conferma
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
 
@@ -201,17 +203,16 @@ class UserSelectView(discord.ui.View):
             await interaction.followup.send("❌ Raggiunto il limite massimo di 10 stanze Bet attive!", ephemeral=True)
             return
 
-        # Raccoglie gli utenti selezionati dal menu a tendina
         selected_users = self.user_select.values
         
-        # Configurazione permessi base (Solo admin, bot e creatore)
+        # Configurazione permessi base
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
             interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
             guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
         }
 
-        # Aggiunge i permessi agli utenti selezionati (evitando duplicati se selezioni te stesso)
+        # Aggiunge i permessi agli utenti selezionati
         for user in selected_users:
             if user.id != interaction.user.id:
                 overwrites[user] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
@@ -223,7 +224,6 @@ class UserSelectView(discord.ui.View):
         channel = await guild.create_text_channel(name=channel_full_name, category=category, overwrites=overwrites)
         active_pyramids[channel.id] = {"cassa": self.cassa_valore, "giocata_attiva": 0.0}
 
-        # Lista menzioni partecipanti
         partecipanti_str = f"• {interaction.user.mention} (Host)"
         for user in selected_users:
             if user.id != interaction.user.id:
@@ -245,7 +245,6 @@ class UserSelectView(discord.ui.View):
         )
         embed.add_field(name="Cassa Iniziale", value=f"{round(self.cassa_valore, 2)}€", inline=False)
         
-        # Notifica dentro la nuova stanza menzionando tutti i partecipanti
         mentions_text = f"{interaction.user.mention} " + " ".join([u.mention for u in selected_users if u.id != interaction.user.id])
         await channel.send(content=mentions_text, embed=embed)
 
