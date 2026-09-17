@@ -78,7 +78,11 @@ async def daily_bet_task():
     
     cassaforte = []
     colpaccio = []
+    
+    # Valori di partenza per il calcolo delle vincite (puntata fissa di 5€)
+    vincita_cassaforte = 5.0
     vincita_colpaccio = 5.0
+    
     matches_collected = 0
     found_any_matches = False
 
@@ -99,9 +103,9 @@ async def daily_bet_task():
                     todays_matches.append(f"• {home} vs {away}")
                     found_any_matches = True
 
-                    # Estrazione quote flessibile per popolare i pronostici
+                    # Estrazione quote per popolare i pronostici
                     if matches_collected < 4:
-                        odd_home = 1.45
+                        odd_home = 1.28
                         odd_away = 2.10
                         
                         bookmakers = match.get("bookmakers", [])
@@ -116,12 +120,18 @@ async def daily_bet_task():
                             except Exception:
                                 pass
 
+                        # Quote fisse o dinamiche per le due giocate
+                        q_cassa = 1.28
+                        q_colpo = odd_away
+
                         # Aggiunge alla Cassaforte
-                        cassaforte.append(f"• **{home} vs {away}** ({league_name}) ➔ **1X** @1.28")
-                        
+                        cassaforte.append(f"• **{home} vs {away}** ({league_name}) ➔ **1X** @{q_cassa}")
+                        vincita_cassaforte *= q_cassa
+
                         # Aggiunge al Colpaccio
-                        colpaccio.append(f"• **{home} vs {away}** ({league_name}) ➔ **1 + Over 1.5** @{odd_away}")
-                        vincita_colpaccio *= odd_away
+                        colpaccio.append(f"• **{home} vs {away}** ({league_name}) ➔ **1 + Over 1.5** @{q_colpo}")
+                        vincita_colpaccio *= q_colpo
+                        
                         matches_collected += 1
 
                 if todays_matches:
@@ -135,18 +145,20 @@ async def daily_bet_task():
     # Invia la lista delle partite
     await channel.send(embed=embed_matches)
 
-    # Invia i pronostici sicuri e compilati
+    # Invia i pronostici con le vincite potenziali separate per entrambe le schedine
     embed_bet = discord.Embed(title=f"🔥 PRONOSTICI DEL GIORNO ({today_str})", color=discord.Color.gold())
     
+    valore_cassa = "\n".join(cassaforte) + f"\n\n💰 **Vincita Potenziale con 5€:** `{round(vincita_cassaforte, 2)}€`" if cassaforte else "Nessun match ideale oggi."
     embed_bet.add_field(
         name="🛡️ LA CASSAFORTE (Alta Probabilità)", 
-        value="\n".join(cassaforte) if cassaforte else "Nessun match ideale oggi.", 
+        value=valore_cassa, 
         inline=False
     )
     
+    valore_colpo = "\n".join(colpaccio) + f"\n\n💰 **Vincita Potenziale con 5€:** `{round(vincita_colpaccio, 2)}€`" if colpaccio else "Nessun match disponibile per oggi."
     embed_bet.add_field(
         name="🚀 IL COLPACCIO (Schedina 5€)", 
-        value="\n".join(colpaccio) + f"\n\n💰 **Vincita Potenziale con 5€:** `{round(vincita_colpaccio, 2)}€`" if colpaccio else "Nessun match disponibile per oggi.", 
+        value=valore_colpo, 
         inline=False
     )
 
