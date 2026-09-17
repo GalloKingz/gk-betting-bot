@@ -205,7 +205,8 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
             "cassa": cassa_valore, 
             "giocata_attiva": 0.0,
             "host": interaction.user,
-            "invitati": invited_list
+            "invitati": invited_list,
+            "esterni": []  # Lista per gli ospiti fisici senza Discord
         }
 
         partecipanti_str = f"• {interaction.user.mention} (Host)"
@@ -214,19 +215,19 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
 
         embed = discord.Embed(
             title=f"💎 Sessione Bet [{channel_full_name.upper()}]",
-            description=f"Stanza privata e protetta!\n\n👥 **Partecipanti ({len(invited_list) + 1}/4):**\n{partecipanti_str}",
+            description=f"Stanza privata e protetta!\n\n👥 **Partecipanti:**\n{partecipanti_str}",
             color=discord.Color.blue()
         )
         embed.add_field(name="💰 Cassa Iniziale", value=f"`{round(cassa_valore, 2)}€`", inline=False)
         
-        # AGGIUNTA GUIDA COMANDI COMPATTA NELL'EMBED
         comandi_guida = (
             "📌 **Come gestire la sessione:**\n"
-            "• `!gioca [importo]` ➔ Scala i soldi e registra la giocata *(puoi allegare lo screenshot)*\n"
-            "• `!vinto [totale]` ➔ Acredita la vincita totale in cassa\n"
-            "• `!perso` ➔ Registra la schedina persa\n"
-            "• `!soldi` ➔ Controlla il saldo attuale della cassa\n"
-            "• `!out` ➔ Preleva il bottone finale, chiudi e invia il report!"
+            "• `!gioca importo` ➔ Registra giocata *(puoi allegare lo screenshot)*\n"
+            "• `!vinto totale` ➔ Accredita la vincita\n"
+            "• `!perso` ➔ Registra schedina persa\n"
+            "• `!ext Nome` ➔ Aggiungi un amico esterno/fisico\n"
+            "• `!soldi` ➔ Controlla saldo cassa\n"
+            "• `!out` ➔ Chiudi sessione e invia report"
         )
         embed.add_field(name="📖 Guida Rapida Comandi", value=comandi_guida, inline=False)
         
@@ -317,6 +318,22 @@ async def cmd_perso(ctx):
         await ctx.send("💪 Siete ancora in plus/gioco! La stanza rimane aperta per il prossimo livello.")
 
 
+@bot.command(name="ext")
+async def cmd_ext(ctx, *, nome_esterno: str = None):
+    if ctx.channel.id not in active_pyramids:
+        return
+        
+    if not nome_esterno:
+        await ctx.send("❌ Specifica il nome dell'ospite. Esempio: `!ext Marco`")
+        return
+
+    data = active_pyramids[ctx.channel.id]
+    data["esterni"].append(nome_esterno)
+    
+    totale_giocatori = 1 + len(data["invitati"]) + len(data["esterni"])
+    await ctx.send(f"✅ Ospite esterno **{nome_esterno}** aggiunto con successo alla sessione! (Totale partecipanti attuali: `{totale_giocatori}`)")
+
+
 @bot.command(name="soldi")
 async def cmd_soldi(ctx):
     if ctx.channel.id not in active_pyramids:
@@ -334,9 +351,19 @@ async def cmd_out(ctx):
     saldo_finale = data["cassa"]
     cassa_iniziale = data["cassa_iniziale"]
     
-    membri_stanza = [data["host"]] + data["invitati"]
-    num_giocatori = len(membri_stanza)
-    tag_membri = " ".join([m.mention for m in membri_stanza])
+    # Calcolo totale dei partecipanti (Host + Invitati Discord + Esterni fisici)
+    discord_members = [data["host"]] + data["invitati"]
+    esterni_list = data["esterni"]
+    
+    num_giocatori = len(discord_members) + len(esterni_list)
+    
+    # Creazione stringa descrittiva dei giocatori per il report
+    membri_testo = ", ".join([m.mention for m in discord_members])
+    if esterni_list:
+        esterni_testo = ", ".join([f"**{ext}** *(Esterno)*" for ext in esterni_list])
+        lista_completa_str = f"{membri_testo}, {esterni_testo}"
+    else:
+        lista_completa_str = membri_testo
 
     guild = ctx.guild
     report_channel = discord.utils.get(guild.text_channels, name=REPORT_CHANNEL_NAME)
@@ -353,11 +380,11 @@ async def cmd_out(ctx):
             title="🏆 SESSIONE CONCLUSA - IN PLUS!",
             description=(
                 f"Complimenti al team! Obiettivo raggiunto con successo. 🚀\n\n"
-                f"👥 **Giocatori ({num_giocatori}):** {tag_membri}\n"
+                f"👥 **Partecipanti ({num_giocatori}):** {lista_completa_str}\n"
                 f"💰 **Cassa Iniziale:** `{round(cassa_iniziale, 2)}€`\n"
                 f"💎 **Bottino Totale Prelevato:** `{round(saldo_finale, 2)}€`\n"
                 f"📈 **Profitto Netto:** `+{round(profitto, 2)}€`\n\n"
-                f"💵 **Spetta a ciascuno:** `~{round(quota_cadauno, 2)}€` a testa"
+                f"💵 **Spetta a ciascuno ({num_giocatori} quote):** `~{round(quota_cadauno, 2)}€` a testa"
             ),
             color=discord.Color.green()
         )
@@ -367,15 +394,16 @@ async def cmd_out(ctx):
             title="💀 SESSIONE CONCLUSA - CASSA PERSA",
             description=(
                 f"Peccato! La piramide è crollata, ma ci si rifà la prossima volta. 💪\n\n"
-                f"👥 **Giocatori ({num_giocatori}):** {tag_membri}\n"
+                f"👥 **Partecipanti ({num_giocatori}):** {lista_completa_str}\n"
                 f"💰 **Cassa Iniziale:** `{round(cassa_iniziale, 2)}€`\n"
                 f"📉 **Cassa Persa:** `{round(perdita, 2)}€` (Saldo finale: `{round(saldo_finale, 2)}€`)"
             ),
             color=discord.Color.red()
         )
 
+    tag_notifica = " ".join([m.mention for m in discord_members])
     if report_channel:
-        await report_channel.send(content=tag_membri, embed=embed_report)
+        await report_channel.send(content=tag_notifica, embed=embed_report)
 
     await ctx.send(f"🔒 **Sessione chiusa.** Report inviato in {report_channel.mention if report_channel else 'chat pubblica'}. Eliminazione stanza tra 5 secondi...")
     
