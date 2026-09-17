@@ -45,7 +45,6 @@ LEAGUES = {
     "Saudi Pro League": "soccer_saudi_pro_league"
 }
 
-# Dizionario in memoria per tracciare le casse e i partecipanti
 active_pyramids = {}
 
 @bot.event
@@ -161,16 +160,31 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
 
         existing_rooms = [ch for ch in guild.channels if ch.name.startswith("bet-")]
         if len(existing_rooms) >= 10:
-            await interaction.followup.send("❌ Raggiunto il limite massimo di 10 stanze Bet attive!", ephemeral=True)
+            err_msg = await interaction.followup.send("❌ Raggiunto il limite massimo di 10 stanze Bet attive!", ephemeral=True)
+            await asyncio.sleep(4)
+            try:
+                await err_msg.delete()
+            except Exception:
+                pass
             return
 
         try:
             cassa_valore = float(self.initial_cash.value.replace(",", "."))
             if cassa_valore < 5.0:
-                await interaction.followup.send("❌ La cassa iniziale deve essere di almeno **5€**!", ephemeral=True)
+                err_msg = await interaction.followup.send("❌ La cassa iniziale deve essere di almeno **5€**!", ephemeral=True)
+                await asyncio.sleep(4)
+                try:
+                    await err_msg.delete()
+                except Exception:
+                    pass
                 return
         except ValueError:
-            await interaction.followup.send("❌ Inserisci un importo numerico valido per la cassa!", ephemeral=True)
+            err_msg = await interaction.followup.send("❌ Inserisci un importo numerico valido per la cassa!", ephemeral=True)
+            await asyncio.sleep(4)
+            try:
+                await err_msg.delete()
+            except Exception:
+                pass
             return
 
         overwrites = {
@@ -183,20 +197,22 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
         invited_list = []
         extra_count = 0
 
-        # Controlla se l'utente ha scritto tipo "+1", "+2", "+3"
         if text_input.startswith("+") and text_input[1:].isdigit():
             extra_count = int(text_input[1:])
         else:
-            # Ricerca utenti taggati o menzionati su Discord
             for member in guild.members:
                 if (str(member.id) in text_input or member.name.lower() in text_input.lower()) and member.id != interaction.user.id:
                     if member not in invited_list:
                         invited_list.append(member)
 
-        # Controllo limite massimo 3 persone aggiuntive (totale 4 giocatori)
         totale_extra = len(invited_list) + extra_count
         if totale_extra > 3:
-            await interaction.followup.send("❌ Puoi aggiungere al **massimo 3 compagni** in totale (es. +3 o 3 tag). Riprova!", ephemeral=True)
+            err_msg = await interaction.followup.send("❌ Puoi aggiungere al **massimo 3 compagni** in totale (es. +3 o 3 tag). Riprova!", ephemeral=True)
+            await asyncio.sleep(4)
+            try:
+                await err_msg.delete()
+            except Exception:
+                pass
             return
 
         for user in invited_list:
@@ -232,7 +248,6 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
         )
         embed.add_field(name="💰 Cassa Iniziale", value=f"`{round(cassa_valore, 2)}€`", inline=False)
         
-        # Guida comandi compatta
         comandi_guida = (
             "• `!gioca [importo]` ➔ Registra giocata *(puoi allegare screen)*\n"
             "• `!vinto [totale]` ➔ Accredita vincita\n"
