@@ -50,98 +50,13 @@ active_pyramids = {}
 @bot.event
 async def on_ready():
     print(f"Bot connesso con successo come {bot.user}")
-    bot.add_view(PyramidView())
+    bot.add_view(PersistentPyramidView())
     if not daily_bet_task.is_running():
         daily_bet_task.start()
-
-@tasks.loop(hours=24)
-async def daily_bet_task():
-    await bot.wait_until_ready()
-    channel = discord.utils.get(bot.get_all_channels(), name=TARGET_CHANNEL_NAME)
-    if not channel:
-        return
-
-    try:
-        await channel.purge(limit=100)
-    except Exception:
-        pass
-
-    if not ODDS_API_KEY:
-        return
-
-    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    cassaforte = []
-    colpaccio = []
-    vincita_cassaforte = 5.0
-    vincita_colpaccio = 5.0
-    matches_collected = 0
-    found_any_matches = False
-
-    embed_matches = discord.Embed(title=f"📅 Partite di Oggi ({today_str}) - Coppe & Leghe", color=discord.Color.green())
-
-    for league_name, league_key in LEAGUES.items():
-        url = f"https://api.the-odds-api.com/v4/sports/{league_key}/odds/?apiKey={ODDS_API_KEY}&regions=eu&markets=h2h&bookmakers=bet365"
-        try:
-            response = requests.get(url, timeout=5).json()
-            if isinstance(response, list) and len(response) > 0:
-                todays_matches = []
-                for match in response:
-                    if not match.get("commence_time", "").startswith(today_str):
-                        continue
-                    
-                    home = match["home_team"]
-                    away = match["away_team"]
-                    todays_matches.append(f"• {home} vs {away}")
-                    found_any_matches = True
-
-                    if matches_collected < 4:
-                        odd_home = 1.28
-                        odd_away = 2.10
-                        bookmakers = match.get("bookmakers", [])
-                        if bookmakers:
-                            try:
-                                outcomes = bookmakers[0]["markets"][0]["outcomes"]
-                                for o in outcomes:
-                                    if o["name"] == home:
-                                        odd_home = o["price"]
-                                    elif o["name"] == away:
-                                        odd_away = o["price"]
-                            except Exception:
-                                pass
-
-                        cassaforte.append(f"• **{home} vs {away}** ({league_name}) ➔ **1X** @1.28")
-                        vincita_cassaforte *= 1.28
-
-                        colpaccio.append(f"• **{home} vs {away}** ({league_name}) ➔ **1 + Over 1.5** @{odd_away}")
-                        vincita_colpaccio *= odd_away
-                        matches_collected += 1
-
-                if todays_matches:
-                    embed_matches.add_field(name=league_name, value="\n".join(todays_matches), inline=False)
-        except Exception:
-            continue
-
-    if not found_any_matches:
-        embed_matches.description = "Nessuna partita in programma oggi."
-
-    await channel.send(embed=embed_matches)
-
-    embed_bet = discord.Embed(title=f"🔥 PRONOSTICI DEL GIORNO ({today_str})", color=discord.Color.gold())
-    valore_cassa = "\n".join(cassaforte) + f"\n\n💰 **Vincita Potenziale con 5€:** `{round(vincita_cassaforte, 2)}€`" if cassaforte else "Nessun match."
-    embed_bet.add_field(name="🛡️ LA CASSAFORTE (Alta Probabilità)", value=valore_cassa, inline=False)
-    
-    valore_colpo = "\n".join(colpaccio) + f"\n\n💰 **Vincita Potenziale con 5€:** `{round(vincita_colpaccio, 2)}€`" if colpaccio else "Nessun match."
-    embed_bet.add_field(name="🚀 IL COLPACCIO (Schedina 5€)", value=valore_colpo, inline=False)
-
-    await channel.send(embed=embed_bet)
-
 
 # --- MODALE DI CONFIGURAZIONE ---
 
 class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
-    def __init__(self):
-        super().__init__()
-
     initial_cash = discord.ui.TextInput(
         label="Cassa Iniziale (Minimo 5€)",
         placeholder="Es. 20 o 50",
@@ -271,11 +186,12 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
             pass
 
 
-class PyramidView(discord.ui.View):
+# --- VIEW PERSISTENTE ---
+class PersistentPyramidView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="➕ Nuova Schedina Piramidale", style=discord.ButtonStyle.green, custom_id="btn_nuova_piramide_fisso")
+    @discord.ui.button(label="➕ Nuova Schedina Piramidale", style=discord.ButtonStyle.green, custom_id="persistent_view:nuova_schedina_piramidale")
     async def open_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(PyramidModal())
 
@@ -288,9 +204,91 @@ async def setup_piramide(ctx):
         description="Clicca sul bottone sottostante per impostare il budget iniziale e invitare fino a 3 compagni.",
         color=discord.Color.gold()
     )
-    view = PyramidView()
+    view = PersistentPyramidView()
     await ctx.send(embed=embed, view=view)
     await ctx.message.delete()
+
+
+@tasks.loop(hours=24)
+async def daily_bet_task():
+    await bot.wait_until_ready()
+    channel = discord.utils.get(bot.get_all_channels(), name=TARGET_CHANNEL_NAME)
+    if not channel:
+        return
+
+    try:
+        await channel.purge(limit=100)
+    except Exception:
+        pass
+
+    if not ODDS_API_KEY:
+        return
+
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    cassaforte = []
+    colpaccio = []
+    vincita_cassaforte = 5.0
+    vincita_colpaccio = 5.0
+    matches_collected = 0
+    found_any_matches = False
+
+    embed_matches = discord.Embed(title=f"📅 Partite di Oggi ({today_str}) - Coppe & Leghe", color=discord.Color.green())
+
+    for league_name, league_key in LEAGUES.items():
+        url = f"https://api.the-odds-api.com/v4/sports/{league_key}/odds/?apiKey={ODDS_API_KEY}&regions=eu&markets=h2h&bookmakers=bet365"
+        try:
+            response = requests.get(url, timeout=5).json()
+            if isinstance(response, list) and len(response) > 0:
+                todays_matches = []
+                for match in response:
+                    if not match.get("commence_time", "").startswith(today_str):
+                        continue
+                    
+                    home = match["home_team"]
+                    away = match["away_team"]
+                    todays_matches.append(f"• {home} vs {away}")
+                    found_any_matches = True
+
+                    if matches_collected < 4:
+                        odd_home = 1.28
+                        odd_away = 2.10
+                        bookmakers = match.get("bookmakers", [])
+                        if bookmakers:
+                            try:
+                                outcomes = bookmakers[0]["markets"][0]["outcomes"]
+                                for o in outcomes:
+                                    if o["name"] == home:
+                                        odd_home = o["price"]
+                                    elif o["name"] == away:
+                                        odd_away = o["price"]
+                            except Exception:
+                                pass
+
+                        cassaforte.append(f"• **{home} vs {away}** ({league_name}) ➔ **1X** @1.28")
+                        vincita_cassaforte *= 1.28
+
+                        colpaccio.append(f"• **{home} vs {away}** ({league_name}) ➔ **1 + Over 1.5** @{odd_away}")
+                        vincita_colpaccio *= odd_away
+                        matches_collected += 1
+
+                if todays_matches:
+                    embed_matches.add_field(name=league_name, value="\n".join(todays_matches), inline=False)
+        except Exception:
+            continue
+
+    if not found_any_matches:
+        embed_matches.description = "Nessuna partita in programma oggi."
+
+    await channel.send(embed=embed_matches)
+
+    embed_bet = discord.Embed(title=f"🔥 PRONOSTICI DEL GIORNO ({today_str})", color=discord.Color.gold())
+    valore_cassa = "\n".join(cassaforte) + f"\n\n💰 **Vincita Potenziale con 5€:** `{round(vincita_cassaforte, 2)}€`" if cassaforte else "Nessun match."
+    embed_bet.add_field(name="🛡️ LA CASSAFORTE (Alta Probabilità)", value=valore_cassa, inline=False)
+    
+    valore_colpo = "\n".join(colpaccio) + f"\n\n💰 **Vincita Potenziale con 5€:** `{round(vincita_colpaccio, 2)}€`" if colpaccio else "Nessun match."
+    embed_bet.add_field(name="🚀 IL COLPACCIO (Schedina 5€)", value=valore_colpo, inline=False)
+
+    await channel.send(embed=embed_bet)
 
 
 # --- COMANDI DELLA STANZA ---
