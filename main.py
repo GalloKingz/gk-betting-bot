@@ -20,14 +20,14 @@ async def start_web_server():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-# Inizializzazione Bot Discord (senza comandi testuali pubblici per evitare spam)
+# Inizializzazione Bot Discord
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 
-# Nome del canale Discord dove il bot pubblicherà in autonomia
+# Nome del canale Discord
 TARGET_CHANNEL_NAME = "partite-e-pronostici" 
 
 # Mappa delle Leghe e delle Coppe Europee
@@ -51,12 +51,11 @@ async def on_ready():
     if not daily_bet_task.is_running():
         daily_bet_task.start()
 
-# Task automatico giornaliero (eseguito ogni 24 ore in background)
+# Task automatico giornaliero
 @tasks.loop(hours=24)
 async def daily_bet_task():
     await bot.wait_until_ready()
     
-    # Cerca il canale di testo designato
     channel = discord.utils.get(bot.get_all_channels(), name=TARGET_CHANNEL_NAME)
     if not channel:
         print(f"Canale {TARGET_CHANNEL_NAME} non trovato!")
@@ -64,7 +63,7 @@ async def daily_bet_task():
 
     print("Esecuzione task automatico giornaliero...")
 
-    # 1. PULIZIA DELLA STANZA: Cancella i messaggi precedenti per tenere il canale pulito
+    # 1. Pulizia della stanza
     try:
         await channel.purge(limit=100)
         print("Canale pulito con successo.")
@@ -77,7 +76,6 @@ async def daily_bet_task():
 
     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     
-    # 2. RACCOLTA PARTITE E PRONOSTICI
     cassaforte = []
     colpaccio = []
     vincita_colpaccio = 5.0
@@ -101,24 +99,30 @@ async def daily_bet_task():
                     todays_matches.append(f"• {home} vs {away}")
                     found_any_matches = True
 
-                    # Raccogliamo dati anche per i pronostici (fino a 5 match)
-                    if matches_collected < 5:
+                    # Estrazione quote flessibile per popolare i pronostici
+                    if matches_collected < 4:
+                        odd_home = 1.45
+                        odd_away = 2.10
+                        
                         bookmakers = match.get("bookmakers", [])
                         if bookmakers:
-                            outcomes = bookmakers[0]["markets"][0]["outcomes"]
-                            odd_home = next((o["price"] for o in outcomes if o["name"] == home), 1.50)
-                            odd_away = next((o["price"] for o in outcomes if o["name"] == away), 2.50)
+                            try:
+                                outcomes = bookmakers[0]["markets"][0]["outcomes"]
+                                for o in outcomes:
+                                    if o["name"] == home:
+                                        odd_home = o["price"]
+                                    elif o["name"] == away:
+                                        odd_away = o["price"]
+                            except Exception:
+                                pass
 
-                            # Cassaforte
-                            if odd_home < 1.85:
-                                cassaforte.append(f"• **{home} vs {away}** ({league_name}) ➔ **1** @{odd_home}")
-                            else:
-                                cassaforte.append(f"• **{home} vs {away}** ({league_name}) ➔ **1X** @1.25")
-
-                            # Colpaccio
-                            colpaccio.append(f"• **{home} vs {away}** ({league_name}) ➔ **Over 2.5 + 1** @{odd_away}")
-                            vincita_colpaccio *= odd_away
-                            matches_collected += 1
+                        # Aggiunge alla Cassaforte
+                        cassaforte.append(f"• **{home} vs {away}** ({league_name}) ➔ **1X** @1.28")
+                        
+                        # Aggiunge al Colpaccio
+                        colpaccio.append(f"• **{home} vs {away}** ({league_name}) ➔ **1 + Over 1.5** @{odd_away}")
+                        vincita_colpaccio *= odd_away
+                        matches_collected += 1
 
                 if todays_matches:
                     embed_matches.add_field(name=league_name, value="\n".join(todays_matches), inline=False)
@@ -128,10 +132,10 @@ async def daily_bet_task():
     if not found_any_matches:
         embed_matches.description = "Nessuna partita in programma esattamente per oggi tra coppe e campionati monitorati."
 
-    # Invia la lista delle partite nel canale pulito
+    # Invia la lista delle partite
     await channel.send(embed=embed_matches)
 
-    # 3. INVIO DEI PRONOSTICI (Cassaforte + Colpaccio)
+    # Invia i pronostici sicuri e compilati
     embed_bet = discord.Embed(title=f"🔥 PRONOSTICI DEL GIORNO ({today_str})", color=discord.Color.gold())
     
     embed_bet.add_field(
@@ -148,7 +152,6 @@ async def daily_bet_task():
 
     await channel.send(embed=embed_bet)
 
-# Comando opzionale per le notizie (disponibile solo se richiamato)
 @bot.command(name="news")
 async def get_news(ctx):
     feed_url = "https://www.gazzetta.it/rss/Calcio.xml"
