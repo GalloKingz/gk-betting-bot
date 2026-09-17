@@ -148,8 +148,8 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
     )
     
     invited_users = discord.ui.TextInput(
-        label="Tagga amici o indica numero (es. @Nome o +2)",
-        placeholder="Es. @Amico oppure +2",
+        label="Tagga amici o indica numero (es. @Nome o +3) MASSIMO 3!",
+        placeholder="Es. @Amico oppure +3",
         required=False,
         max_length=100
     )
