@@ -27,8 +27,11 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 
-# Mappa delle 8 Leghe Principali
+# Mappa delle Leghe e delle Coppe Europee
 LEAGUES = {
+    "Champions League": "soccer_uefa_champions_league",
+    "Europa League": "soccer_uefa_europa_league",
+    "Conference League": "soccer_uefa_europa_conference_league",
     "Serie A": "soccer_italy_serie_a",
     "Premier League": "soccer_epl",
     "LaLiga": "soccer_spain_la_liga",
@@ -55,7 +58,7 @@ async def get_news(ctx):
     
     await ctx.send(embed=embed)
 
-# Comando per visualizzare le partite di OGGI nelle 8 leghe
+# Comando per visualizzare le partite di OGGI (Coppe + Leghe)
 @bot.command(name="partite")
 async def get_matches(ctx):
     if not ODDS_API_KEY:
@@ -63,7 +66,7 @@ async def get_matches(ctx):
         return
 
     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    embed = discord.Embed(title=f"📅 Partite di Oggi ({today_str}) - 8 Leghe", color=discord.Color.green())
+    embed = discord.Embed(title=f"📅 Partite di Oggi ({today_str}) - Coppe & Leghe", color=discord.Color.green())
     found_any = False
 
     for league_name, league_key in LEAGUES.items():
@@ -73,7 +76,6 @@ async def get_matches(ctx):
             if isinstance(response, list) and len(response) > 0:
                 todays_matches = []
                 for m in response:
-                    # Filtra solo i match la cui data coincide con quella odierna (formato UTC)
                     if m.get("commence_time", "").startswith(today_str):
                         todays_matches.append(f"• {m['home_team']} vs {m['away_team']}")
                 
@@ -84,7 +86,7 @@ async def get_matches(ctx):
             continue
 
     if not found_any:
-        embed.description = "Nessuna partita in programma esattamente per oggi nelle 8 leghe monitorate."
+        embed.description = "Nessuna partita in programma esattamente per oggi tra coppe e campionati monitorati."
 
     await ctx.send(embed=embed)
 
@@ -111,7 +113,6 @@ async def get_bet(ctx):
                 for match in response:
                     if matches_collected >= 5:
                         break
-                    # Prende solo i match di oggi
                     if not match.get("commence_time", "").startswith(today_str):
                         continue
 
