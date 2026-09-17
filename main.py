@@ -51,6 +51,10 @@ active_pyramids = {}
 @bot.event
 async def on_ready():
     print(f"Bot connesso con successo come {bot.user}")
+    
+    # Registra la vista persistente del bottone per evitare timeout dopo i riavvii di Render
+    bot.add_view(PyramidView())
+    
     if not daily_bet_task.is_running():
         daily_bet_task.start()
 
@@ -204,7 +208,6 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
         for user in invited_list:
             partecipanti_str += f"\n• {user.mention}"
 
-        # Embed principale della stanza
         embed = discord.Embed(
             title=f"💎 Sessione Bet [{channel_full_name.upper()}]",
             description=f"Stanza creata con successo!\n\n👥 **Partecipanti ({len(invited_list) + 1}/4):**\n{partecipanti_str}",
@@ -215,7 +218,6 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
         mentions_text = f"{interaction.user.mention} " + " ".join([u.mention for u in invited_list])
         await channel.send(content=mentions_text, embed=embed)
 
-        # Messaggio separato con le istruzioni dettagliate d'uso della stanza
         instructions_embed = discord.Embed(
             title="📖 GUIDA E COMANDI DELLA STANZA",
             description=(
