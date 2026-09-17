@@ -20,7 +20,7 @@ async def start_web_server():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-# Inizializzazione Bot Discord
+# Inizializzazione Bot Discord (senza comandi testuali pubblici per evitare spam)
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -51,11 +51,9 @@ async def on_ready():
     if not daily_bet_task.is_running():
         daily_bet_task.start()
 
-# Task automatico giornaliero (esegue ogni giorno alle 08:00 di mattina)
-# Puoi modificare l'orario cambiando time(hour=8, minute=0)
+# Task automatico giornaliero (eseguito ogni 24 ore in background)
 @tasks.loop(hours=24)
 async def daily_bet_task():
-    # Attende che il bot sia pronto
     await bot.wait_until_ready()
     
     # Cerca il canale di testo designato
@@ -66,7 +64,7 @@ async def daily_bet_task():
 
     print("Esecuzione task automatico giornaliero...")
 
-    # 1. PULIZIA DELLA STANZA: Cancella i messaggi precedenti per tenerla pulita
+    # 1. PULIZIA DELLA STANZA: Cancella i messaggi precedenti per tenere il canale pulito
     try:
         await channel.purge(limit=100)
         print("Canale pulito con successo.")
@@ -133,7 +131,7 @@ async def daily_bet_task():
     # Invia la lista delle partite nel canale pulito
     await channel.send(embed=embed_matches)
 
-    # 3. INVIO DEL EMBED PRONOSTICI (Cassaforte + Colpaccio)
+    # 3. INVIO DEI PRONOSTICI (Cassaforte + Colpaccio)
     embed_bet = discord.Embed(title=f"🔥 PRONOSTICI DEL GIORNO ({today_str})", color=discord.Color.gold())
     
     embed_bet.add_field(
@@ -150,7 +148,7 @@ async def daily_bet_task():
 
     await channel.send(embed=embed_bet)
 
-# Comando extra facoltativo per le notizie (opzionale, se vuoi lasciarlo)
+# Comando opzionale per le notizie (disponibile solo se richiamato)
 @bot.command(name="news")
 async def get_news(ctx):
     feed_url = "https://www.gazzetta.it/rss/Calcio.xml"
