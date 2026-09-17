@@ -21,11 +21,23 @@ async def start_web_server():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
+# --- CLASSE VIEW PERSISTENTE ---
+class PyramidView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None) # Timeout None rende il bottone persistente
+
+    @discord.ui.button(label="➕ Nuova Schedina Piramidale", style=discord.ButtonStyle.green, custom_id="btn_nuova_piramide_persistente")
+    async def open_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(PyramidModal())
+
 # Inizializzazione Bot Discord
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# Registrazione immediata della View per persistenza globale
+bot.add_view(PyramidView())
 
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 TARGET_CHANNEL_NAME = "partite-e-pronostici" 
@@ -50,6 +62,7 @@ active_pyramids = {}
 @bot.event
 async def on_ready():
     print(f"Bot connesso con successo come {bot.user}")
+    # Riassicuriamoci che sia registrata anche qui
     bot.add_view(PyramidView())
     if not daily_bet_task.is_running():
         daily_bet_task.start()
@@ -266,15 +279,6 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
             await msg.delete()
         except Exception:
             pass
-
-
-class PyramidView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="➕ Nuova Schedina Piramidale", style=discord.ButtonStyle.green, custom_id="btn_nuova_piramide")
-    async def open_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(PyramidModal())
 
 
 @bot.command(name="setup_piramide")
