@@ -6,7 +6,7 @@ from discord.ext import commands
 import requests
 import feedparser
 
-# Mini server web integrato per Render
+# Mini server web integrato per Render (Keep-Alive)
 async def handle(request):
     return web.Response(text="GK Betting Bot Online!")
 
@@ -26,7 +26,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 
-# Mappa delle 8 Leghe Principali
+# Mappa delle 8 Leghe Principali richieste
 LEAGUES = {
     "Serie A": "soccer_italy_serie_a",
     "Premier League": "soccer_epl",
@@ -42,7 +42,7 @@ LEAGUES = {
 async def on_ready():
     print(f"Bot connesso con successo come {bot.user}")
 
-# Comando per le News
+# Comando per le Ultime Notizie Calcio
 @bot.command(name="news")
 async def get_news(ctx):
     feed_url = "https://www.gazzetta.it/rss/Calcio.xml"
@@ -54,45 +54,79 @@ async def get_news(ctx):
     
     await ctx.send(embed=embed)
 
-# Comando per i Pronostici del Giorno (Cassaforte + Colpaccio 5€)
+# Comando per visualizzare le partite delle 8 leghe
+@bot.command(name="partite")
+async def get_matches(ctx):
+    if not ODDS_API_KEY:
+        await ctx.send("Chiave API Odds non configurata.")
+        return
+
+    embed = discord.Embed(title="📅 Partite del Giorno - Le 8 Leghe", color=discord.Color.green())
+    found_any = False
+
+    for league_name, league_key in LEAGUES.items():
+        url = f"https://api.the-odds-api.com/v4/sports/{league_key}/odds/?apiKey={ODDS_API_KEY}&regions=eu&markets=h2h&bookmakers=bet365"
+        try:
+            response = requests.get(url, timeout=5).json()
+            if isinstance(response, list) and len(response) > 0:
+                matches_text = []
+                for m in response[:3]: # Prende fino a 3 match per lega per non intasare la chat
+                    matches_text.append(f"• {m['home_team']} vs {m['away_team']}")
+                embed.add_field(name=league_name, value="\n".join(matches_text), inline=False)
+                found_any = True
+        except Exception:
+            continue
+
+    if not found_any:
+        embed.description = "Nessuna partita in programma trovata al momento per le 8 leghe."
+
+    await ctx.send(embed=embed)
+
+# Comando per i Pronostici (Cassaforte + Colpaccio 5€) su tutte le 8 leghe
 @bot.command(name="bet")
 async def get_bet(ctx):
     if not ODDS_API_KEY:
         await ctx.send("Chiave API Odds non configurata.")
         return
 
-    url = f"https://api.the-odds-api.com/v4/sports/soccer_italy_serie_a/odds/?apiKey={ODDS_API_KEY}&regions=eu&markets=h2h&bookmakers=bet365"
-    response = requests.get(url).json()
-
-    if not response or isinstance(response, dict):
-        await ctx.send("Nessuna partita disponibile al momento o limite API raggiunto.")
-        return
-
     cassaforte = []
     colpaccio = []
     vincita_colpaccio = 5.0
+    matches_collected = 0
 
-    for match in response[:5]:
-        home = match["home_team"]
-        away = match["away_team"]
-        bookmakers = match.get("bookmakers", [])
-        
-        if bookmakers:
-            outcomes = bookmakers[0]["markets"][0]["outcomes"]
-            odd_home = next((o["price"] for o in outcomes if o["name"] == home), 1.50)
-            odd_away = next((o["price"] for o in outcomes if o["name"] == away), 2.50)
+    for league_name, league_key in LEAGUES.items():
+        if matches_collected >= 5:
+            break
+        url = f"https://api.the-odds-api.com/v4/sports/{league_key}/odds/?apiKey={ODDS_API_KEY}&regions=eu&markets=h2h&bookmakers=bet365"
+        try:
+            response = requests.get(url, timeout=5).json()
+            if isinstance(response, list) and len(response) > 0:
+                for match in response[:2]:
+                    if matches_collected >= 5:
+                        break
+                    home = match["home_team"]
+                    away = match["away_team"]
+                    bookmakers = match.get("bookmakers", [])
+                    
+                    if bookmakers:
+                        outcomes = bookmakers[0]["markets"][0]["outcomes"]
+                        odd_home = next((o["price"] for o in outcomes if o["name"] == home), 1.50)
+                        odd_away = next((o["price"] for o in outcomes if o["name"] == away), 2.50)
 
-            # Cassaforte: Quota più bassa / 1X2 sicura
-            if odd_home < 1.80:
-                cassaforte.append(f"• **{home} vs {away}** ➔ **1** @{odd_home}")
-            else:
-                cassaforte.append(f"• **{home} vs {away}** ➔ **1X** @1.25")
+                        # Aggiunge alla Cassaforte
+                        if odd_home < 1.85:
+                            cassaforte.append(f"• **{home} vs {away}** ({league_name}) ➔ **1** @{odd_home}")
+                        else:
+                            cassaforte.append(f"• **{home} vs {away}** ({league_name}) ➔ **1X** @1.25")
 
-            # Colpaccio: Quota più alta
-            colpaccio.append(f"• **{home} vs {away}** ➔ **Over 2.5 + 1** @{odd_away}")
-            vincita_colpaccio *= odd_away
+                        # Aggiunge al Colpaccio
+                        colpaccio.append(f"• **{home} vs {away}** ({league_name}) ➔ **Over 2.5 + 1** @{odd_away}")
+                        vincita_colpaccio *= odd_away
+                        matches_collected += 1
+        except Exception:
+            continue
 
-    embed = discord.Embed(title="🔥 PRONOSTICI DEL GIORNO - GK BETTING", color=discord.Color.gold())
+    embed = discord.Embed(title="🔥 PRONOSTICI DEL GIORNO - 8 LEGHE TOP", color=discord.Color.gold())
     
     embed.add_field(
         name="🛡️ LA CASSAFORTE (Alta Probabilità)", 
