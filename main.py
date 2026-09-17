@@ -7,7 +7,6 @@ from aiohttp import web
 import discord
 from discord.ext import commands, tasks
 import requests
-import feedparser
 
 # Mini server web integrato per Render (Keep-Alive)
 async def handle(request):
@@ -30,6 +29,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 TARGET_CHANNEL_NAME = "partite-e-pronostici" 
+REPORT_CHANNEL_NAME = "vincite-e-perdite"
 
 LEAGUES = {
     "Champions League": "soccer_uefa_champions_league",
@@ -45,16 +45,14 @@ LEAGUES = {
     "Saudi Pro League": "soccer_saudi_pro_league"
 }
 
-# Dizionario in memoria per tracciare le casse {channel_id: {"cassa": float, "giocata_attiva": float}}
+# Dizionario in memoria per tracciare le casse e i partecipanti
+# {channel_id: {"cassa_iniziale": float, "cassa": float, "giocata_attiva": float, "host": discord.Member, "invitati": list}}
 active_pyramids = {}
 
 @bot.event
 async def on_ready():
     print(f"Bot connesso con successo come {bot.user}")
-    
-    # Registra la vista persistente del bottone per evitare timeout dopo i riavvii di Render
     bot.add_view(PyramidView())
-    
     if not daily_bet_task.is_running():
         daily_bet_task.start()
 
@@ -140,7 +138,7 @@ async def daily_bet_task():
     await channel.send(embed=embed_bet)
 
 
-# --- MODALE CON CONTROLLO MAX 3 TAG E ISTRUZIONI INCLUSE ---
+# --- MODALE DI CONFIGURAZIONE ---
 
 class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
     initial_cash = discord.ui.TextInput(
@@ -191,7 +189,7 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
                     invited_list.append(member)
 
         if len(invited_list) > 3:
-            await interaction.followup.send("❌ Puoi invitare al **massimo 3 amici** (per un totale di 4 giocatori inclusi te). Correggi il campo e riprova!", ephemeral=True)
+            await interaction.followup.send("❌ Puoi invitare al **massimo 3 amici** (totale 4 giocatori). Correggi e riprova!", ephemeral=True)
             return
 
         for user in invited_list:
@@ -202,7 +200,14 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
         channel_full_name = f"bet-{random_code}"
 
         channel = await guild.create_text_channel(name=channel_full_name, category=category, overwrites=overwrites)
-        active_pyramids[channel.id] = {"cassa": cassa_valore, "giocata_attiva": 0.0}
+        
+        active_pyramids[channel.id] = {
+            "cassa_iniziale": cassa_valore,
+            "cassa": cassa_valore, 
+            "giocata_attiva": 0.0,
+            "host": interaction.user,
+            "invitati": invited_list
+        }
 
         partecipanti_str = f"• {interaction.user.mention} (Host)"
         for user in invited_list:
@@ -210,32 +215,14 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
 
         embed = discord.Embed(
             title=f"💎 Sessione Bet [{channel_full_name.upper()}]",
-            description=f"Stanza creata con successo!\n\n👥 **Partecipanti ({len(invited_list) + 1}/4):**\n{partecipanti_str}",
+            description=f"Stanza pulita e pronta!\n\n👥 **Partecipanti ({len(invited_list) + 1}/4):**\n{partecipanti_str}",
             color=discord.Color.blue()
         )
         embed.add_field(name="Cassa Iniziale", value=f"{round(cassa_valore, 2)}€", inline=False)
+        embed.set_footer(text="Usa !gioca [importo] (+ allegato), !vinto [totale], !perso, !soldi o !out")
         
         mentions_text = f"{interaction.user.mention} " + " ".join([u.mention for u in invited_list])
         await channel.send(content=mentions_text, embed=embed)
-
-        instructions_embed = discord.Embed(
-            title="📖 GUIDA E COMANDI DELLA STANZA",
-            description=(
-                "Benvenuti nella vostra sessione di betting! Ecco come gestire la cassa passo dopo passo:\n\n"
-                "1️⃣ **Piazzare una giocata:**\n"
-                "Usa il comando `!gioca [importo]` (es. `!gioca 10`) per scalare i soldi dalla cassa attiva.\n\n"
-                "2️⃣ **Registrare una vincita:**\n"
-                "Usa il comando `!vinto [importo totale]` (es. `!vinto 25.50`) per accreditare la vincita nella cassa.\n\n"
-                "3️⃣ **Registrare una perdita:**\n"
-                "Usa il comando `!perso` se la schedina è saltata. La cassa scalerà e se siete ancora in plus la stanza resterà aperta per il prossimo tentativo!\n\n"
-                "4️⃣ **Controllare il saldo:**\n"
-                "Usa `!soldi` in qualsiasi momento per vedere quanti soldi sono rimasti in cassa.\n\n"
-                "5️⃣ **Prelevare e chiudere:**\n"
-                "Usa `!out` per prelevare il bottino finale e chiudere definitivamente la stanza."
-            ),
-            color=discord.Color.gold()
-        )
-        await channel.send(embed=instructions_embed)
 
         await interaction.followup.send(f"✅ Stanza creata con successo: {channel.mention}", ephemeral=True)
 
@@ -270,7 +257,7 @@ async def cmd_gioca(ctx, importo: float = None):
         return
     
     if importo is None:
-        await ctx.send("❌ Specifica l'importo giocato. Esempio: `!gioca 10`")
+        await ctx.send("❌ Specifica l'importo giocato. Esempio: `!gioca 10` (puoi allegare lo screenshot della schedina nello stesso messaggio!)")
         return
 
     data = active_pyramids[ctx.channel.id]
@@ -280,7 +267,11 @@ async def cmd_gioca(ctx, importo: float = None):
 
     data["cassa"] -= importo
     data["giocata_attiva"] = importo
-    await ctx.send(f"✅ **Schedina registrata!** Puntati `{importo}€`. Fondi rimanenti in cassa: `{round(data['cassa'], 2)}€`")
+
+    has_attachment = len(ctx.message.attachments) > 0
+    msg_extra = " 📸 *(Screenshot allegato registrato!)*" if has_attachment else ""
+
+    await ctx.send(f"✅ **Schedina registrata!** Puntati `{importo}€`. Fondi rimanenti in cassa: `{round(data['cassa'], 2)}€`{msg_extra}")
 
 
 @bot.command(name="vinto")
@@ -307,9 +298,9 @@ async def cmd_perso(ctx):
     
     await ctx.send(f"⚠️ Schedina persa registrata. Cassa attuale rimasta: `{round(data['cassa'], 2)}€`")
     if data["cassa"] <= 0:
-        await ctx.send("❌ Cassa a zero! Digita `!out` per chiudere la sessione.")
+        await ctx.send("❌ Cassa a zero! Digita `!out` per chiudere la sessione e inviare il report.")
     else:
-        await ctx.send("💪 Siete ancora in plus/gioco! La stanza rimane aperta per il prossimo livello della piramide.")
+        await ctx.send("💪 Siete ancora in plus/gioco! La stanza rimane aperta per il prossimo livello.")
 
 
 @bot.command(name="soldi")
@@ -327,8 +318,52 @@ async def cmd_out(ctx):
     
     data = active_pyramids[ctx.channel.id]
     saldo_finale = data["cassa"]
+    cassa_iniziale = data["cassa_iniziale"]
     
-    await ctx.send(f"🔒 **Sessione chiusa.** Prelevati/Chiusi con un totale di `{round(saldo_finale, 2)}€`. La stanza verrà eliminata tra 5 secondi...")
+    membri_stanza = [data["host"]] + data["invitati"]
+    num_giocatori = len(membri_stanza)
+    tag_membri = " ".join([m.mention for m in membri_stanza])
+
+    guild = ctx.guild
+    report_channel = discord.utils.get(guild.text_channels, name=REPORT_CHANNEL_NAME)
+    if not report_channel:
+        try:
+            report_channel = await guild.create_text_channel(name=REPORT_CHANNEL_NAME)
+        except Exception:
+            report_channel = None
+
+    if saldo_finale >= cassa_iniziale:
+        profitto = saldo_finale - cassa_iniziale
+        quota_cadauno = saldo_finale / num_giocatori
+        embed_report = discord.Embed(
+            title="🏆 SESSIONE CONCLUSA - IN PLUS!",
+            description=(
+                f"Complimenti al team! Obiettivo raggiunto con successo. 🚀\n\n"
+                f"👥 **Giocatori ({num_giocatori}):** {tag_membri}\n"
+                f"💰 **Cassa Iniziale:** `{round(cassa_iniziale, 2)}€`\n"
+                f"💎 **Bottino Totale Prelevato:** `{round(saldo_finale, 2)}€`\n"
+                f"📈 **Profitto Netto:** `+{round(profitto, 2)}€`\n\n"
+                f"💵 **Spetta a ciascuno:** `~{round(quota_cadauno, 2)}€` a testa"
+            ),
+            color=discord.Color.green()
+        )
+    else:
+        perdita = cassa_iniziale - saldo_finale
+        embed_report = discord.Embed(
+            title="💀 SESSIONE CONCLUSA - CASSA PERSA",
+            description=(
+                f"Peccato! La piramide è crollata, ma ci si rifà la prossima volta. 💪\n\n"
+                f"👥 **Giocatori ({num_giocatori}):** {tag_membri}\n"
+                f"💰 **Cassa Iniziale:** `{round(cassa_iniziale, 2)}€`\n"
+                f"📉 **Cassa Persa:** `{round(perdita, 2)}€` (Saldo finale: `{round(saldo_finale, 2)}€`)"
+            ),
+            color=discord.Color.red()
+        )
+
+    if report_channel:
+        await report_channel.send(content=tag_membri, embed=embed_report)
+
+    await ctx.send(f"🔒 **Sessione chiusa.** Report inviato in {report_channel.mention if report_channel else 'chat pubblica'}. Eliminazione stanza tra 5 secondi...")
     
     del active_pyramids[ctx.channel.id]
     await asyncio.sleep(5)
