@@ -1,5 +1,7 @@
 import os
 import asyncio
+import random
+import string
 from datetime import datetime, timezone
 from aiohttp import web
 import discord
@@ -28,7 +30,6 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 TARGET_CHANNEL_NAME = "partite-e-pronostici" 
 
-# Mappa delle Leghe
 LEAGUES = {
     "Champions League": "soccer_uefa_champions_league",
     "Europa League": "soccer_uefa_europa_league",
@@ -43,7 +44,7 @@ LEAGUES = {
     "Saudi Pro League": "soccer_saudi_pro_league"
 }
 
-# Dizionario in memoria per tracciare le casse delle stanze temporali {channel_id: {"cassa": float, "giocata_attiva": float}}
+# Dizionario in memoria per tracciare le casse {channel_id: {"cassa": float, "giocata_attiva": float}}
 active_pyramids = {}
 
 @bot.event
@@ -52,7 +53,6 @@ async def on_ready():
     if not daily_bet_task.is_running():
         daily_bet_task.start()
 
-# Task automatico giornaliero per #partite-e-pronostici
 @tasks.loop(hours=24)
 async def daily_bet_task():
     await bot.wait_until_ready()
@@ -135,44 +135,82 @@ async def daily_bet_task():
     await channel.send(embed=embed_bet)
 
 
-# --- SISTEMA GESTIONE PIRAMIDE (STANZE TEMPORANEE) ---
+# --- MODULO POP-UP AGGIORNATO (CON CODICE E MINIMO 5€) ---
 
-class PyramidView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
+class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
+    initial_cash = discord.ui.TextInput(
+        label="Cassa Iniziale (Minimo 5€)",
+        placeholder="Es. 20 o 50",
+        min_length=1,
+        max_length=5,
+        required=True
+    )
+    
+    mode_type = discord.ui.TextInput(
+        label="Modalità (Scrivi 'solo' o 'insieme')",
+        placeholder="solo / insieme",
+        min_length=3,
+        max_length=8,
+        required=True
+    )
 
-    @discord.ui.button(label="➕ Nuova Schedina Piramidale", style=discord.ButtonStyle.green, custom_id="btn_nuova_piramide")
-    async def create_pyramid_room(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def on_submit(self, interaction: discord.Interaction):
         guild = interaction.guild
         
-        # Controllo limite massimo di 10 stanze temporali attive
-        existing_rooms = [ch for ch in guild.channels if ch.name.startswith("piramide-")]
+        # Controllo limite massimo 10 stanze
+        existing_rooms = [ch for ch in guild.channels if ch.name.startswith("bet-")]
         if len(existing_rooms) >= 10:
-            await interaction.response.send_message("❌ Raggiunto il limite massimo di 10 stanze piramidali attive!", ephemeral=True)
+            await interaction.response.send_message("❌ Raggiunto il limite massimo di 10 stanze Bet attive!", ephemeral=True)
             return
 
-        # Trova la categoria corrente o la crea
+        # Validazione importo cassa (minimo 5€)
+        try:
+            cassa_valore = float(self.initial_cash.value.replace(",", "."))
+            if cassa_valore < 5.0:
+                await interaction.response.send_message("❌ La cassa iniziale deve essere di almeno **5€**!", ephemeral=True)
+                return
+        except ValueError:
+            await interaction.response.send_message("❌ Inserisci un importo numerico valido per la cassa!", ephemeral=True)
+            return
+
+        # Gestione modalità (solo o insieme)
+        modalita = self.mode_type.value.strip().lower()
+        if modalita not in ["solo", "insieme"]:
+            await interaction.response.send_message("❌ Nel campo modalità devi scrivere esattamente **'solo'** oppure **'insieme'**!", ephemeral=True)
+            return
+
         category = interaction.channel.category
         
-        # Configurazione permessi (Visibile solo all'utente che clicca e al bot)
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(read_messages=False),
-            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
-            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
-        }
+        # Generazione codice casuale di 4 caratteri alfanumerici (es. bet-4f9a)
+        random_code = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
+        channel_full_name = f"bet-{random_code}"
 
-        # Crea il canale temporaneo
-        room_name = f"piramide-{interaction.user.name}"
-        channel = await guild.create_text_channel(name=room_name, category=category, overwrites=overwrites)
-        
-        # Inizializza la cassa di questa stanza (es. 20€ iniziali)
-        active_pyramids[channel.id] = {"cassa": 20.0, "giocata_attiva": 0.0}
+        # Configurazione permessi in base alla scelta
+        if modalita == "solo":
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+                guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
+            }
+            info_mode = "👤 Modalità Singola (Visibile solo a te)"
+        else:
+            # Se è "insieme", chiunque abbia accesso alla categoria o un amico menzionato può entrare, oppure lasciamo visibile ai ruoli/amici (o aperta nel canale privato)
+            # Qui diamo accesso alla categoria ma creiamo la stanza privata per chi l'ha avviata (il tuo amico può essere aggiunto con un comando o abilitato)
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+                guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
+            }
+            info_mode = "👥 Modalità Insieme (Usa 'Aggiungi membri' se vuoi fare entrare il tuo socio)"
 
-        # Messaggio guida all'interno della stanza
+        channel = await guild.create_text_channel(name=channel_full_name, category=category, overwrites=overwrites)
+        active_pyramids[channel.id] = {"cassa": cassa_valore, "giocata_attiva": 0.0}
+
         embed = discord.Embed(
-            title="💎 Sessione Piramidale Attivata",
+            title=f"💎 Sessione Bet [{channel_full_name.upper()}]",
             description=(
-                "Benvenuti nella vostra stanza privata per la gestione della piramide.\n\n"
+                f"Stanza creata con successo!\n"
+                f"• **Tipo:** {info_mode}\n\n"
                 "**Comandi disponibili:**\n"
                 "• `!gioca [importo]` ➔ Scala l'importo dalla cassa e registra la giocata.\n"
                 "• `!vinto [importo_vincita]` ➔ Registra la vincita e aggiorna la cassa.\n"
@@ -182,19 +220,27 @@ class PyramidView(discord.ui.View):
             ),
             color=discord.Color.blue()
         )
-        embed.add_field(name="Cassa Iniziale", value="20.00€", inline=False)
+        embed.add_field(name="Cassa Iniziale", value=f"{round(cassa_valore, 2)}€", inline=False)
         await channel.send(content=f"{interaction.user.mention}", embed=embed)
 
         await interaction.response.send_message(f"✅ Stanza creata con successo: {channel.mention}", ephemeral=True)
 
 
-# Comando per generare il pannello con il bottone nella categoria
+class PyramidView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="➕ Nuova Schedina Piramidale", style=discord.ButtonStyle.green, custom_id="btn_nuova_piramide")
+    async def open_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(PyramidModal())
+
+
 @bot.command(name="setup_piramide")
 @commands.has_permissions(administrator=True)
 async def setup_piramide(ctx):
     embed = discord.Embed(
         title="💎 GESTIONE PIRAMIDE BETS",
-        description="Clicca sul bottone sottostante per aprire una stanza temporale privata e avviare un nuovo ciclo di scommesse piramidali.",
+        description="Clicca sul bottone sottostante per aprire il modulo, impostare il budget iniziale (da 5€ in su) e scegliere la modalità.",
         color=discord.Color.gold()
     )
     view = PyramidView()
@@ -202,7 +248,7 @@ async def setup_piramide(ctx):
     await ctx.message.delete()
 
 
-# --- COMANDI DELLA STANZA PIRAMIDALE ---
+# --- COMANDI DELLA STANZA ---
 
 @bot.command(name="gioca")
 async def cmd_gioca(ctx, importo: float = None):
@@ -270,7 +316,6 @@ async def cmd_out(ctx):
     
     await ctx.send(f"🔒 **Sessione chiusa.** Prelevati/Chiusi con un totale di `{round(saldo_finale, 2)}€`. La stanza verrà eliminata tra 5 secondi...")
     
-    # Rimuove dai registri e cancella il canale dopo 5 secondi
     del active_pyramids[ctx.channel.id]
     await asyncio.sleep(5)
     await ctx.channel.delete()
