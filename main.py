@@ -71,7 +71,8 @@ async def fetch_and_post_matches():
         await channel.send("⚠️ Chiave `ODDS_API_KEY` non configurata nelle variabili d'ambiente di Render!")
         return
 
-    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Calcola la data esatta nel momento in cui viene eseguita la funzione
+    today_str = datetime.now().strftime("%Y-%m-%d")
     cassaforte = []
     colpaccio = []
     vincita_cassaforte = 5.0
@@ -143,7 +144,7 @@ async def fetch_and_post_matches():
 async def daily_midnight_task():
     await fetch_and_post_matches()
 
-# Comando manuale per forzare l'aggiornamento quando vuoi (es. ora per testare)
+# Comando manuale per forzare l'aggiornamento quando vuoi
 @bot.command(name="aggiorna_partite")
 @commands.has_permissions(administrator=True)
 async def cmd_aggiorna_partite(ctx):
