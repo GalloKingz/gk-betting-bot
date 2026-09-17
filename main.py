@@ -173,7 +173,6 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
             await interaction.followup.send("❌ Inserisci un importo numerico valido per la cassa!", ephemeral=True)
             return
 
-        # BLINDATURA PERMESSI: Solo il bot, l'host e gli invitati possono vedere la stanza
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
             interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
@@ -218,13 +217,22 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
             description=f"Stanza privata e protetta!\n\n👥 **Partecipanti ({len(invited_list) + 1}/4):**\n{partecipanti_str}",
             color=discord.Color.blue()
         )
-        embed.add_field(name="Cassa Iniziale", value=f"{round(cassa_valore, 2)}€", inline=False)
-        embed.set_footer(text="Usa !gioca [importo] (+ allegato), !vinto [totale], !perso, !soldi o !out")
+        embed.add_field(name="💰 Cassa Iniziale", value=f"`{round(cassa_valore, 2)}€`", inline=False)
+        
+        # AGGIUNTA GUIDA COMANDI COMPATTA NELL'EMBED
+        comandi_guida = (
+            "📌 **Come gestire la sessione:**\n"
+            "• `!gioca [importo]` ➔ Scala i soldi e registra la giocata *(puoi allegare lo screenshot)*\n"
+            "• `!vinto [totale]` ➔ Acredita la vincita totale in cassa\n"
+            "• `!perso` ➔ Registra la schedina persa\n"
+            "• `!soldi` ➔ Controlla il saldo attuale della cassa\n"
+            "• `!out` ➔ Preleva il bottone finale, chiudi e invia il report!"
+        )
+        embed.add_field(name="📖 Guida Rapida Comandi", value=comandi_guida, inline=False)
         
         mentions_text = f"{interaction.user.mention} " + " ".join([u.mention for u in invited_list])
         await channel.send(content=mentions_text, embed=embed)
 
-        # Risposta effimera che si elimina da sola subito dopo
         msg = await interaction.followup.send(f"✅ Stanza privata creata con successo: {channel.mention}", ephemeral=True)
         await asyncio.sleep(4)
         try:
