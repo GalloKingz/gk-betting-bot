@@ -1,5 +1,6 @@
 import os
 import asyncio
+from datetime import datetime, timezone
 from aiohttp import web
 import discord
 from discord.ext import commands
@@ -26,7 +27,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 
-# Mappa delle 8 Leghe Principali richieste
+# Mappa delle 8 Leghe Principali
 LEAGUES = {
     "Serie A": "soccer_italy_serie_a",
     "Premier League": "soccer_epl",
@@ -54,14 +55,15 @@ async def get_news(ctx):
     
     await ctx.send(embed=embed)
 
-# Comando per visualizzare le partite delle 8 leghe
+# Comando per visualizzare le partite di OGGI nelle 8 leghe
 @bot.command(name="partite")
 async def get_matches(ctx):
     if not ODDS_API_KEY:
         await ctx.send("Chiave API Odds non configurata.")
         return
 
-    embed = discord.Embed(title="📅 Partite del Giorno - Le 8 Leghe", color=discord.Color.green())
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    embed = discord.Embed(title=f"📅 Partite di Oggi ({today_str}) - 8 Leghe", color=discord.Color.green())
     found_any = False
 
     for league_name, league_key in LEAGUES.items():
@@ -69,26 +71,31 @@ async def get_matches(ctx):
         try:
             response = requests.get(url, timeout=5).json()
             if isinstance(response, list) and len(response) > 0:
-                matches_text = []
-                for m in response[:3]: # Prende fino a 3 match per lega per non intasare la chat
-                    matches_text.append(f"• {m['home_team']} vs {m['away_team']}")
-                embed.add_field(name=league_name, value="\n".join(matches_text), inline=False)
-                found_any = True
+                todays_matches = []
+                for m in response:
+                    # Filtra solo i match la cui data coincide con quella odierna (formato UTC)
+                    if m.get("commence_time", "").startswith(today_str):
+                        todays_matches.append(f"• {m['home_team']} vs {m['away_team']}")
+                
+                if todays_matches:
+                    embed.add_field(name=league_name, value="\n".join(todays_matches), inline=False)
+                    found_any = True
         except Exception:
             continue
 
     if not found_any:
-        embed.description = "Nessuna partita in programma trovata al momento per le 8 leghe."
+        embed.description = "Nessuna partita in programma esattamente per oggi nelle 8 leghe monitorate."
 
     await ctx.send(embed=embed)
 
-# Comando per i Pronostici (Cassaforte + Colpaccio 5€) su tutte le 8 leghe
+# Comando per i Pronostici di OGGI (Cassaforte + Colpaccio 5€)
 @bot.command(name="bet")
 async def get_bet(ctx):
     if not ODDS_API_KEY:
         await ctx.send("Chiave API Odds non configurata.")
         return
 
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     cassaforte = []
     colpaccio = []
     vincita_colpaccio = 5.0
@@ -101,9 +108,13 @@ async def get_bet(ctx):
         try:
             response = requests.get(url, timeout=5).json()
             if isinstance(response, list) and len(response) > 0:
-                for match in response[:2]:
+                for match in response:
                     if matches_collected >= 5:
                         break
+                    # Prende solo i match di oggi
+                    if not match.get("commence_time", "").startswith(today_str):
+                        continue
+
                     home = match["home_team"]
                     away = match["away_team"]
                     bookmakers = match.get("bookmakers", [])
@@ -113,20 +124,20 @@ async def get_bet(ctx):
                         odd_home = next((o["price"] for o in outcomes if o["name"] == home), 1.50)
                         odd_away = next((o["price"] for o in outcomes if o["name"] == away), 2.50)
 
-                        # Aggiunge alla Cassaforte
+                        # Cassaforte
                         if odd_home < 1.85:
                             cassaforte.append(f"• **{home} vs {away}** ({league_name}) ➔ **1** @{odd_home}")
                         else:
                             cassaforte.append(f"• **{home} vs {away}** ({league_name}) ➔ **1X** @1.25")
 
-                        # Aggiunge al Colpaccio
+                        # Colpaccio
                         colpaccio.append(f"• **{home} vs {away}** ({league_name}) ➔ **Over 2.5 + 1** @{odd_away}")
                         vincita_colpaccio *= odd_away
                         matches_collected += 1
         except Exception:
             continue
 
-    embed = discord.Embed(title="🔥 PRONOSTICI DEL GIORNO - 8 LEGHE TOP", color=discord.Color.gold())
+    embed = discord.Embed(title=f"🔥 PRONOSTICI DEL GIORNO ({today_str})", color=discord.Color.gold())
     
     embed.add_field(
         name="🛡️ LA CASSAFORTE (Alta Probabilità)", 
@@ -136,7 +147,7 @@ async def get_bet(ctx):
     
     embed.add_field(
         name="🚀 IL COLPACCIO (Schedina 5€)", 
-        value="\n".join(colpaccio) + f"\n\n💰 **Vincita Potenziale con 5€:** `{round(vincita_colpaccio, 2)}€`" if colpaccio else "Nessun match disponibile.", 
+        value="\n".join(colpaccio) + f"\n\n💰 **Vincita Potenziale con 5€:** `{round(vincita_colpaccio, 2)}€`" if colpaccio else "Nessun match disponibile per oggi.", 
         inline=False
     )
 
