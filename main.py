@@ -158,27 +158,29 @@ async def fetch_and_post_matches():
                     todays_matches.append(f"• {home} vs {away}")
                     found_any_matches = True
 
-                    if matches_collected < 4:
-                        odd_home = 1.28
-                        odd_away = 2.10
-                        bookmakers = match.get("bookmakers", [])
-                        if bookmakers:
-                            try:
-                                outcomes = bookmakers[0]["markets"][0]["outcomes"]
-                                for o in outcomes:
-                                    if o["name"] == home:
-                                        odd_home = o["price"]
-                                    elif o["name"] == away:
-                                        odd_away = o["price"]
-                            except Exception:
-                                pass
+                    # Cerca le quote reali dall'API senza usare valori finti di fallback
+                    bookmakers = match.get("bookmakers", [])
+                    if bookmakers:
+                        try:
+                            outcomes = bookmakers[0]["markets"][0]["outcomes"]
+                            odd_home = None
+                            odd_away = None
+                            for o in outcomes:
+                                if o["name"] == home:
+                                    odd_home = float(o["price"])
+                                elif o["name"] == away:
+                                    odd_away = float(o["price"])
+                            
+                            # Se troviamo le quote reali e non abbiamo ancora riempito la schedina
+                            if odd_home and odd_away and matches_collected < 4:
+                                cassaforte.append(f"• **{home} vs {away}** ({league_name}) ➔ **1X** @{odd_home}")
+                                vincita_cassaforte *= odd_home
 
-                        cassaforte.append(f"• **{home} vs {away}** ({league_name}) ➔ **1X** @1.28")
-                        vincita_cassaforte *= 1.28
-
-                        colpaccio.append(f"• **{home} vs {away}** ({league_name}) ➔ **1 + Over 1.5** @{odd_away}")
-                        vincita_colpaccio *= odd_away
-                        matches_collected += 1
+                                colpaccio.append(f"• **{home} vs {away}** ({league_name}) ➔ **1 + Over 1.5** @{odd_away}")
+                                vincita_colpaccio *= odd_away
+                                matches_collected += 1
+                        except Exception:
+                            pass
 
                 if todays_matches:
                     embed_matches.add_field(name=league_name, value="\n".join(todays_matches), inline=False)
