@@ -52,9 +52,70 @@ async def on_ready():
     print(f"Bot connesso con successo come {bot.user}")
     bot.add_view(PersistentPyramidView())
     
+    # Ricostruisce le lobby attive dai canali esistenti per non perdere mai i dati in corso
+    await restore_active_pyramids()
+    
     # Avvia il task pianificato per la mezzanotte se non è già attivo
     if not daily_midnight_task.is_running():
         daily_midnight_task.start()
+
+# --- FUNZIONE PER RIPRISTINARE LE LOBBY DOPO UN RIAVVIO ---
+async def restore_active_pyramids():
+    for guild in bot.guilds:
+        for channel in guild.text_channels:
+            if channel.name.startswith("bet-"):
+                try:
+                    cassa_iniziale = 20.0
+                    cassa_corrente = 20.0
+                    host = guild.owner
+                    invitati = []
+                    
+                    # Legge la cronologia del canale per recuperare i dati reali
+                    async for message in channel.history(limit=50, oldest_first=True):
+                        # Cerca il messaggio iniziale con l'embed della stanza
+                        if message.embeds:
+                            embed = message.embeds[0]
+                            if embed.title and "Sessione Bet" in embed.title:
+                                if message.mentions:
+                                    host = message.mentions[0]
+                                    invitati = message.mentions[1:]
+                                for field in embed.fields:
+                                    if field.name and "Cassa Iniziale" in field.name:
+                                        try:
+                                            val_clean = field.value.replace("€", "").replace("`", "").strip()
+                                            cassa_iniziale = float(val_clean)
+                                            cassa_corrente = cassa_iniziale
+                                        except:
+                                            pass
+                        
+                        # Legge i comandi eseguiti in precedenza per aggiornare la cassa esatta
+                        if message.content.startswith("!"):
+                            parts = message.content.split()
+                            cmd = parts[0].lower()
+                            if cmd == "!gioca" and len(parts) > 1:
+                                try:
+                                    imp = float(parts[1].replace(",", "."))
+                                    cassa_corrente -= imp
+                                except:
+                                    pass
+                            elif cmd == "!vinto" and len(parts) > 1:
+                                try:
+                                    inc = float(parts[1].replace(",", "."))
+                                    cassa_corrente += inc
+                                except:
+                                    pass
+
+                    active_pyramids[channel.id] = {
+                        "cassa_iniziale": cassa_iniziale,
+                        "cassa": cassa_corrente,
+                        "giocata_attiva": 0.0,
+                        "host": host,
+                        "invitati": invitati,
+                        "extra_count": 0
+                    }
+                    print(f"Lobby ripristinata con successo: {channel.name} (Cassa: {cassa_corrente}€)")
+                except Exception as e:
+                    print(f"Errore nel ripristino della lobby {channel.name}: {e}")
 
 # --- FUNZIONE CONDIVISA PER RECUPERARE LE PARTITE ---
 async def fetch_and_post_matches():
@@ -71,7 +132,6 @@ async def fetch_and_post_matches():
         await channel.send("⚠️ Chiave `ODDS_API_KEY` non configurata nelle variabili d'ambiente di Render!")
         return
 
-    # Calcola la data esatta nel momento in cui viene eseguita la funzione
     today_str = datetime.now().strftime("%Y-%m-%d")
     cassaforte = []
     colpaccio = []
@@ -139,12 +199,12 @@ async def fetch_and_post_matches():
 
     await channel.send(embed=embed_bet)
 
-# Task pianificato esattamente per scattare a mezzanotte (00:00 UTC) ogni giorno
+# Task pianificato per la mezzanotte UTC
 @tasks.loop(time=time(hour=0, minute=0, tzinfo=timezone.utc))
 async def daily_midnight_task():
     await fetch_and_post_matches()
 
-# Comando manuale per forzare l'aggiornamento quando vuoi
+# Comando manuale per forzare l'aggiornamento
 @bot.command(name="aggiorna_partite")
 @commands.has_permissions(administrator=True)
 async def cmd_aggiorna_partite(ctx):
