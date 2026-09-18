@@ -6,7 +6,6 @@ from datetime import datetime, time, timezone
 from aiohttp import web
 import discord
 from discord.ext import commands, tasks
-import json
 import requests
 
 # --- MINI SERVER WEB PER MANTENERE ATTIVO IL WEB SERVICE SU RENDER ---
@@ -18,7 +17,7 @@ async def start_web_server():
     app.router.add_get("/", handle)
     runner = web.AppRunner(app)
     await runner.setup()
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.environ.get("PORT", 10000))  # Usa la porta assegnata da Render (default 10000)
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
@@ -32,7 +31,6 @@ ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 TARGET_CHANNEL_NAME = "📅・partite-e-pronostici" 
 REPORT_CHANNEL_NAME = "🏆・vincite-e-perdite"
 LOG_CHANNEL_NAME = "🤖-bot-log"
-DB_CHANNEL_NAME = "🗄️-database-persistente"
 
 LEAGUES = {
     "Champions League": "soccer_uefa_champions_league",
@@ -49,61 +47,10 @@ LEAGUES = {
 }
 
 active_pyramids = {}
-user_balances = {} # Dizionario in memoria per i conti utente
 todays_matches_message_id = None
-last_health_check_message_id = None
+last_health_check_message_id = None  # Variabile per tracciare l'ultimo log di health check da ripulire
 
-# --- SISTEMA DI PERSISTENZA TRAMITE MESSAGGIO ROTATIVO SU DISCORD ---
-async def load_database_from_discord(guild):
-    global user_balances
-    try:
-        category = discord.utils.get(guild.categories, name="🛡️ OWNER & STAFF")
-        if not category:
-            return
-        channel = discord.utils.get(category.text_channels, name=DB_CHANNEL_NAME)
-        if not channel:
-            return
-        
-        async for message in channel.history(limit=5):
-            if message.author == guild.me and message.content.startswith("```json"):
-                content = message.content.replace("```json", "").replace("```", "").strip()
-                user_balances = json.loads(content)
-                print("Database dei conti caricato con successo da Discord!")
-                return
-    except Exception as e:
-        print(f"Errore nel caricamento del database da Discord: {e}")
-
-async def save_database_to_discord(guild):
-    try:
-        category = discord.utils.get(guild.categories, name="🛡️ OWNER & STAFF")
-        if not category:
-            overwrites = {
-                guild.default_role: discord.PermissionOverwrite(read_messages=False),
-                guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
-            }
-            category = await guild.create_category(name="🛡️ OWNER & STAFF", overwrites=overwrites)
-
-        channel = discord.utils.get(category.text_channels, name=DB_CHANNEL_NAME)
-        if not channel:
-            channel = await guild.create_text_channel(name=DB_CHANNEL_NAME, category=category)
-
-        json_data = f"```json\n{json.dumps(user_balances, indent=4)}\n```"
-
-        # Cerca l'ultimo messaggio del bot per aggiornarlo (messaggio rotativo unico)
-        last_msg = None
-        async for message in channel.history(limit=10):
-            if message.author == guild.me:
-                last_msg = message
-                break
-        
-        if last_msg:
-            await last_msg.edit(content=json_data)
-        else:
-            await channel.send(content=json_data)
-    except Exception as e:
-        print(f"Errore nel salvataggio del database su Discord: {e}")
-
-# --- FUNZIONE AUSILIARIA PER SCRIVERE NEI LOG ---
+# --- FUNZIONE AUSILIARIA PER SCRIVERE NEI LOG DEL BOT NELLA CATEGORIA OWNER ---
 async def send_bot_log(guild, message_text, color=discord.Color.blue()):
     try:
         category = discord.utils.get(guild.categories, name="🛡️ OWNER & STAFF")
@@ -116,7 +63,11 @@ async def send_bot_log(guild, message_text, color=discord.Color.blue()):
 
         channel = discord.utils.get(category.text_channels, name=LOG_CHANNEL_NAME)
         if not channel:
-            channel = await guild.create_text_channel(name=LOG_CHANNEL_NAME, category=category)
+            channel = discord.utils.get(guild.text_channels, name=LOG_CHANNEL_NAME)
+            if channel:
+                await channel.edit(category=category)
+            else:
+                channel = await guild.create_text_channel(name=LOG_CHANNEL_NAME, category=category)
         
         embed = discord.Embed(
             title="🤖 [GK BOT SYSTEM LOG]",
@@ -131,17 +82,12 @@ async def send_bot_log(guild, message_text, color=discord.Color.blue()):
 @bot.event
 async def on_ready():
     print(f"Bot connesso con successo come {bot.user}")
-    
-    for guild in bot.guilds:
-        await load_database_from_discord(guild)
-        break # Carica dal primo server disponibile
-
     bot.add_view(PersistentPyramidView())
     await restore_active_pyramids()
     await fetch_and_post_matches()
     
     for guild in bot.guilds:
-        await send_bot_log(guild, f"🟢 **Bot avviato con successo!** Connesso come `{bot.user}`. Database e sistemi attivi.", discord.Color.green())
+        await send_bot_log(guild, f"🟢 **Bot avviato con successo!** Connesso come `{bot.user}`. Sistemi attivi.", discord.Color.green())
 
     if not daily_midnight_task.is_running():
         daily_midnight_task.start()
@@ -150,7 +96,7 @@ async def on_ready():
     if not keep_alive_ping_log.is_running():
         keep_alive_ping_log.start()
 
-# --- TASK DI HEALTH CHECK PERIODICO (PULIZIA LOG PRECEDENTE) ---
+# --- TASK DI HEALTH CHECK PERIODICO (OGNI 10 MINUTI CON PULIZIA MESSAGGIO PRECEDENTE) ---
 @tasks.loop(minutes=10)
 async def keep_alive_ping_log():
     global last_health_check_message_id
@@ -163,6 +109,7 @@ async def keep_alive_ping_log():
             if not channel:
                 continue
 
+            # Cancella il log di health check precedente se esiste
             if last_health_check_message_id:
                 try:
                     old_msg = await channel.fetch_message(last_health_check_message_id)
@@ -170,6 +117,7 @@ async def keep_alive_ping_log():
                 except Exception:
                     pass
 
+            # Invia il nuovo embed di health check
             embed = discord.Embed(
                 title="🤖 [GK BOT SYSTEM LOG]",
                 description="💓 **Health Check periodico:** Il bot è attivo e il server web risponde correttamente.",
@@ -178,10 +126,11 @@ async def keep_alive_ping_log():
             )
             new_msg = await channel.send(embed=embed)
             last_health_check_message_id = new_msg.id
+
         except Exception as e:
             print(f"Errore nel task di health check: {e}")
 
-# --- RESTAURAZIONE LOBBY ---
+# --- FUNZIONE PER RIPRISTINARE LE LOBBY DOPO UN RIAVVIO ---
 async def restore_active_pyramids():
     for guild in bot.guilds:
         for channel in guild.text_channels:
@@ -235,7 +184,7 @@ async def restore_active_pyramids():
                 except Exception as e:
                     print(f"Errore nel ripristino della lobby {channel.name}: {e}")
 
-# --- FUNZIONI PARTITE ---
+# --- FUNZIONE CONDIVISA PER LE PARTITE E QUOTE REALI ---
 async def fetch_and_post_matches():
     global todays_matches_message_id
     channel = discord.utils.get(bot.get_all_channels(), name=TARGET_CHANNEL_NAME)
@@ -249,7 +198,7 @@ async def fetch_and_post_matches():
 
     if not ODDS_API_KEY:
         for guild in bot.guilds:
-            await send_bot_log(guild, "⚠️ **Attenzione:** Chiave `ODDS_API_KEY` non configurata!", discord.Color.orange())
+            await send_bot_log(guild, "⚠️ **Attenzione:** Chiave `ODDS_API_KEY` non configurata nelle variabili d'ambiente!", discord.Color.orange())
         return
 
     today_str = datetime.now().strftime("%Y-%m-%d")
@@ -263,7 +212,7 @@ async def fetch_and_post_matches():
     embed_matches = discord.Embed(title=f"📅 Partite di Oggi ({today_str}) - Coppe & Leghe", color=discord.Color.green())
 
     for league_name, league_key in LEAGUES.items():
-        url = f"[https://api.the-odds-api.com/v4/sports/](https://api.the-odds-api.com/v4/sports/){league_key}/odds/?apiKey={ODDS_API_KEY}&regions=eu&markets=h2h"
+        url = f"https://api.the-odds-api.com/v4/sports/{league_key}/odds/?apiKey={ODDS_API_KEY}&regions=eu&markets=h2h"
         try:
             response = requests.get(url, timeout=5).json()
             if isinstance(response, list) and len(response) > 0:
@@ -337,10 +286,10 @@ async def fetch_and_post_matches():
     todays_matches_message_id = sent_msg.id
 
     embed_bet = discord.Embed(title=f"🔥 PRONOSTICI DEL GIORNO ({today_str})", color=discord.Color.gold())
-    valore_cassa = "\n".join(cassaforte) + f"\n\n💰 **Vincita Potenziale con 5€:** `{round(vincita_cassaforte, 2)}€`" if cassaforte else "Nessun match disponibile."
+    valore_cassa = "\n".join(cassaforte) + f"\n\n💰 **Vincita Potenziale con 5€:** `{round(vincita_cassaforte, 2)}€`" if cassaforte else "Nessun match disponibile per la cassa."
     embed_bet.add_field(name="🛡️ LA CASSAFORTE (Alta Probabilità)", value=valore_cassa, inline=False)
     
-    valore_colpo = "\n".join(colpaccio) + f"\n\n💰 **Vincita Potenziale con 5€:** `{round(vincita_colpaccio, 2)}€`" if colpaccio else "Nessun match disponibile."
+    valore_colpo = "\n".join(colpaccio) + f"\n\n💰 **Vincita Potenziale con 5€:** `{round(vincita_colpaccio, 2)}€`" if colpaccio else "Nessun match disponibile per il colpaccio."
     embed_bet.add_field(name="🚀 IL COLPACCIO (Schedina 5€)", value=valore_colpo, inline=False)
 
     await channel.send(embed=embed_bet)
@@ -348,6 +297,7 @@ async def fetch_and_post_matches():
     for guild in bot.guilds:
         await send_bot_log(guild, "🔄 **Partite aggiornate:** Raccolti match e quote reali per la data odierna.", discord.Color.blue())
 
+# --- TASK LIVE RISULTATI ---
 @tasks.loop(minutes=15)
 async def check_match_scores():
     global todays_matches_message_id
@@ -378,7 +328,7 @@ async def check_match_scores():
             new_fields.append(field)
             continue
 
-        url = f"[https://api.the-odds-api.com/v4/sports/](https://api.the-odds-api.com/v4/sports/){league_key}/scores/?apiKey={ODDS_API_KEY}&daysFrom=1"
+        url = f"https://api.the-odds-api.com/v4/sports/{league_key}/scores/?apiKey={ODDS_API_KEY}&daysFrom=1"
         try:
             response = requests.get(url, timeout=5).json()
             if isinstance(response, list):
@@ -425,7 +375,7 @@ async def check_match_scores():
         try:
             await msg.edit(embed=embed)
             for guild in bot.guilds:
-                await send_bot_log(guild, "⚽ **Controllo Live:** Risultati aggiornati.", discord.Color.blue())
+                await send_bot_log(guild, "⚽ **Controllo Live:** Risultati aggiornati nel canale pronostici.", discord.Color.blue())
         except Exception:
             pass
 
@@ -438,13 +388,28 @@ async def daily_midnight_task():
 async def cmd_aggiorna_partite(ctx):
     await ctx.send("🔄 Aggiornamento manuale in corso...")
     await fetch_and_post_matches()
-    try: await ctx.message.delete()
-    except: pass
+    try:
+        await ctx.message.delete()
+    except:
+        pass
 
-# --- MODALE E VIEW PIRAMIDE ---
+
+# --- MODALE DI CONFIGURAZIONE ---
 class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
-    initial_cash = discord.ui.TextInput(label="Cassa Iniziale (Minimo 5€)", placeholder="Es. 20 o 50", min_length=1, max_length=5, required=True)
-    invited_users = discord.ui.TextInput(label="Tagga amici o indica numero (es. @Nome o +3)", placeholder="Es. @Amico oppure +3", required=False, max_length=100)
+    initial_cash = discord.ui.TextInput(
+        label="Cassa Iniziale (Minimo 5€)",
+        placeholder="Es. 20 o 50",
+        min_length=1,
+        max_length=5,
+        required=True
+    )
+    
+    invited_users = discord.ui.TextInput(
+        label="Tagga amici o indica numero (es. @Nome o +3)",
+        placeholder="Es. @Amico oppure +3",
+        required=False,
+        max_length=100
+    )
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
@@ -468,7 +433,7 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
                     except: pass
                     return
             except ValueError:
-                err_msg = await interaction.followup.send("❌ Inserisci un importo numerico valido!", ephemeral=True)
+                err_msg = await interaction.followup.send("❌ Inserisci un importo numerico valido per la cassa!", ephemeral=True)
                 await asyncio.sleep(4)
                 try: await err_msg.delete()
                 except: pass
@@ -494,7 +459,7 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
 
             totale_extra = len(invited_list) + extra_count
             if totale_extra > 3:
-                err_msg = await interaction.followup.send("❌ Puoi aggiungere al **massimo 3 compagni** in totale.", ephemeral=True)
+                err_msg = await interaction.followup.send("❌ Puoi aggiungere al **massimo 3 compagni** in totale. Riprova!", ephemeral=True)
                 await asyncio.sleep(4)
                 try: await err_msg.delete()
                 except: pass
@@ -534,13 +499,13 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
 
             embed = discord.Embed(
                 title=f"💎 Sessione Bet [{channel_full_name.upper()}]",
-                description=f"Stanza privata protetta!\n\n👥 **Partecipanti ({num_totale_giocatori}/4):**\n{partecipanti_str}",
+                description=f"Stanza privata e protetta!\n\n👥 **Partecipanti ({num_totale_giocatori}/4):**\n{partecipanti_str}",
                 color=discord.Color.blue()
             )
             embed.add_field(name="💰 Cassa Iniziale", value=f"`{round(cassa_valore, 2)}€`", inline=False)
             
             comandi_guida = (
-                "• `!gioca [importo]` ➔ Registra giocata\n"
+                "• `!gioca [importo]` ➔ Registra giocata *(puoi allegare screen)*\n"
                 "• `!vinto [totale]` ➔ Accredita vincita\n"
                 "• `!perso` ➔ Schedina persa\n"
                 "• `!soldi` ➔ Saldo cassa\n"
@@ -551,16 +516,18 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
             mentions_text = f"{interaction.user.mention} " + " ".join([u.mention for u in invited_list])
             await channel.send(content=mentions_text, embed=embed)
 
-            msg = await interaction.followup.send(f"✅ Stanza creata: {channel.mention}", ephemeral=True)
+            msg = await interaction.followup.send(f"✅ Stanza privata creata: {channel.mention}", ephemeral=True)
             await asyncio.sleep(4)
             try: await msg.delete()
             except: pass
             
-            await send_bot_log(guild, f"📂 **Nuova Lobby:** `{channel_full_name}` aperta da {interaction.user.name}.", discord.Color.purple())
+            await send_bot_log(guild, f"📂 **Nuova Lobby:** `{channel_full_name}` aperta da {interaction.user.name} con cassa `{cassa_valore}€`.", discord.Color.purple())
 
         except Exception as e:
             print(f"Errore nel modale: {e}")
 
+
+# --- VIEW PERSISTENTE ---
 class PersistentPyramidView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -569,13 +536,20 @@ class PersistentPyramidView(discord.ui.View):
     async def open_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(PyramidModal())
 
+
 @bot.command(name="setup_piramide")
 @commands.has_permissions(administrator=True)
 async def setup_piramide(ctx):
-    embed = discord.Embed(title="💎 GESTIONE PIRAMIDE BETS", description="Clicca sul bottone per impostare il budget iniziale.", color=discord.Color.gold())
-    await ctx.send(embed=embed, view=PersistentPyramidView())
+    embed = discord.Embed(
+        title="💎 GESTIONE PIRAMIDE BETS",
+        description="Clicca sul bottone per impostare il budget iniziale e invitare fino a 3 compagni.",
+        color=discord.Color.gold()
+    )
+    view = PersistentPyramidView()
+    await ctx.send(embed=embed, view=view)
     try: await ctx.message.delete()
     except: pass
+
 
 # --- COMANDI DELLA STANZA ---
 @bot.command(name="gioca")
@@ -679,18 +653,20 @@ async def cmd_out(ctx):
         await report_channel.send(content=tag_membri, embed=embed_report)
 
     await ctx.send("🔒 **Sessione chiusa.** Report inviato. Chiusura canale tra 5 secondi...")
-    await send_bot_log(guild, f"🔒 **Lobby chiusa:** `{ctx.channel.name}`. Saldo finale: `{saldo_finale}€`.", discord.Color.orange())
+    
+    await send_bot_log(guild, f"🔒 **Lobby chiusa:** `{ctx.channel.name}` chiusa. Saldo finale: `{saldo_finale}€`.", discord.Color.orange())
     
     del active_pyramids[ctx.channel.id]
     await asyncio.sleep(5)
     await ctx.channel.delete()
 
-# --- AVVIO PRINCIPALE ---
+
+# --- FUNZIONE PRINCIPALE DI AVVIO (WEB SERVER + BOT DISCORD INSIEME) ---
 async def main():
     await start_web_server()
     token = os.environ.get("DISCORD_TOKEN")
     if not token:
-        print("❌ ERRORE: Token di Discord non trovato!")
+        print("❌ ERRORE: Token di Discord non trovato nelle variabili d'ambiente!")
         return
     await bot.start(token)
 
