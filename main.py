@@ -2,12 +2,11 @@ import os
 import asyncio
 import random
 import string
-from datetime import datetime, time, timezone
+from datetime import datetime, timezone
 from aiohttp import web
 import discord
 from discord.ext import commands, tasks
 import json
-import requests
 
 # --- MINI SERVER WEB PER MANTENERE ATTIVO IL WEB SERVICE SU RENDER ---
 async def handle(request):
@@ -28,29 +27,12 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
-TARGET_CHANNEL_NAME = "📅・partite-e-pronostici" 
 REPORT_CHANNEL_NAME = "🏆・vincite-e-perdite"
 LOG_CHANNEL_NAME = "🤖-bot-log"
 DB_CHANNEL_NAME = "🗄️-database-persistente"
 
-LEAGUES = {
-    "Champions League": "soccer_uefa_champions_league",
-    "Europa League": "soccer_uefa_europa_league",
-    "Conference League": "soccer_uefa_europa_conference_league",
-    "Serie A": "soccer_italy_serie_a",
-    "Premier League": "soccer_epl",
-    "LaLiga": "soccer_spain_la_liga",
-    "Bundesliga": "soccer_germany_bundesliga",
-    "Ligue 1": "soccer_france_ligue_one",
-    "Eredivisie": "soccer_netherlands_eredivisie",
-    "Süper Lig": "soccer_turkey_super_league",
-    "Saudi Pro League": "soccer_saudi_pro_league"
-}
-
 active_pyramids = {}
 user_balances = {} # Dizionario in memoria per i conti utente
-todays_matches_message_id = None
 last_health_check_message_id = None
 
 # --- SISTEMA DI PERSISTENZA TRAMITE MESSAGGIO ROTATIVO SU DISCORD ---
@@ -136,15 +118,10 @@ async def on_ready():
 
     bot.add_view(PersistentPyramidView())
     await restore_active_pyramids()
-    await fetch_and_post_matches()
     
     for guild in bot.guilds:
-        await send_bot_log(guild, f"🟢 **Bot avviato con successo!** Connesso come `{bot.user}`. Database e sistemi attivi.", discord.Color.green())
+        await send_bot_log(guild, f"🟢 **Bot avviato con successo!** Connesso come `{bot.user}`. Gestione lobby e conti attivi.", discord.Color.green())
 
-    if not daily_midnight_task.is_running():
-        daily_midnight_task.start()
-    if not check_match_scores.is_running():
-        check_match_scores.start()
     if not keep_alive_ping_log.is_running():
         keep_alive_ping_log.start()
 
@@ -231,206 +208,7 @@ async def restore_active_pyramids():
                 except Exception as e:
                     print(f"Errore nel ripristino della lobby {channel.name}: {e}")
 
-# --- FUNZIONI PARTITE (CORRETTA PER PRENDERE SEMPRE I MATCH DISPONIBILI) ---
-async def fetch_and_post_matches():
-    global todays_matches_message_id
-    channel = discord.utils.get(bot.get_all_channels(), name=TARGET_CHANNEL_NAME)
-    if not channel:
-        return
-
-    try:
-        await channel.purge(limit=100)
-    except Exception:
-        pass
-
-    if not ODDS_API_KEY:
-        for guild in bot.guilds:
-            await send_bot_log(guild, "⚠️ **Attenzione:** Chiave `ODDS_API_KEY` non configurata!", discord.Color.orange())
-        return
-
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    cassaforte = []
-    colpaccio = []
-    vincita_cassaforte = 5.0
-    vincita_colpaccio = 5.0
-    matches_collected = 0
-    found_any_matches = False
-
-    embed_matches = discord.Embed(title=f"📅 Partite Disponibili ({today_str}) - Coppe & Leghe", color=discord.Color.green())
-
-    for league_name, league_key in LEAGUES.items():
-        url = f"[https://api.the-odds-api.com/v4/sports/](https://api.the-odds-api.com/v4/sports/){league_key}/odds/?apiKey={ODDS_API_KEY}&regions=eu&markets=h2h"
-        try:
-            response = requests.get(url, timeout=5).json()
-            if isinstance(response, list) and len(response) > 0:
-                todays_matches = []
-                # Prende le prime partite disponibili senza filtri rigidi di data
-                for match in response[:5]: 
-                    home = match.get("home_team")
-                    away = match.get("away_team")
-                    if not home or not away:
-                        continue
-
-                    todays_matches.append(f"• {home} vs {away} ⏳ *In programma*")
-                    found_any_matches = True
-
-                    if matches_collected < 4:
-                        odd_home = 2.00
-                        odd_draw = 3.20
-                        odd_away = 3.50
-                        try:
-                            bookmakers = match.get("bookmakers", [])
-                            if bookmakers:
-                                outcomes = bookmakers[0]["markets"][0]["outcomes"]
-                                for o in outcomes:
-                                    name = o.get("name")
-                                    price = float(o.get("price", 0))
-                                    if name == home:
-                                        odd_home = price
-                                    elif name == away:
-                                        odd_away = price
-                                    elif name.lower() in ["draw", "pareggio", "x"]:
-                                        odd_draw = price
-                        except Exception:
-                            pass
-
-                        scelte_cassa = [
-                            ("1 (Segno 1)", odd_home),
-                            ("2 (Segno 2)", odd_away),
-                            ("X (Pareggio)", odd_draw),
-                            ("1X (Doppia Chance)", round(odd_home * 1.12, 2))
-                        ]
-                        scelte_cassa_ordinate = sorted(scelte_cassa, key=lambda x: x[1])
-                        scelta_cassa = scelte_cassa_ordinate[matches_collected % len(scelte_cassa_ordinate)]
-                        
-                        mercato_cassa, quota_cassa = scelta_cassa
-                        cassaforte.append(f"• **{home} vs {away}** ({league_name}) ➔ **{mercato_cassa}** @{quota_cassa}")
-                        vincita_cassaforte *= quota_cassa
-
-                        scelte_colpo = [
-                            ("2 (Segno 2)", odd_away),
-                            ("X (Pareggio)", odd_draw),
-                            ("1 (Segno 1)", odd_home),
-                            ("Gol (Entrambe a segno)", round(max(odd_home, odd_away) * 0.90, 2))
-                        ]
-                        scelta_colpo = scelte_colpo[(matches_collected + 2) % len(scelte_colpo)]
-                        
-                        mercato_colpo, quota_colpo = scelta_colpo
-                        colpaccio.append(f"• **{home} vs {away}** ({league_name}) ➔ **{mercato_colpo}** @{quota_colpo}")
-                        vincita_colpaccio *= quota_colpo
-                        
-                        matches_collected += 1
-
-                if todays_matches:
-                    embed_matches.add_field(name=league_name, value="\n".join(todays_matches), inline=False)
-        except Exception:
-            continue
-
-    if not found_any_matches:
-        embed_matches.description = "Nessuna partita trovata al momento nei campionati monitorati."
-
-    sent_msg = await channel.send(embed=embed_matches)
-    todays_matches_message_id = sent_msg.id
-
-    embed_bet = discord.Embed(title=f"🔥 PRONOSTICI CONSIGLIATI ({today_str})", color=discord.Color.gold())
-    valore_cassa = "\n".join(cassaforte) + f"\n\n💰 **Vincita Potenziale con 5€:** `{round(vincita_cassaforte, 2)}€`" if cassaforte else "Nessun match disponibile."
-    embed_bet.add_field(name="🛡️ LA CASSAFORTE (Alta Probabilità)", value=valore_cassa, inline=False)
-    
-    valore_colpo = "\n".join(colpaccio) + f"\n\n💰 **Vincita Potenziale con 5€:** `{round(vincita_colpaccio, 2)}€`" if colpaccio else "Nessun match disponibile."
-    embed_bet.add_field(name="🚀 IL COLPACCIO (Schedina 5€)", value=valore_colpo, inline=False)
-
-    await channel.send(embed=embed_bet)
-    
-    for guild in bot.guilds:
-        await send_bot_log(guild, "🔄 **Partite aggiornate:** Raccolti match e quote disponibili.", discord.Color.blue())
-
-@tasks.loop(minutes=15)
-async def check_match_scores():
-    global todays_matches_message_id
-    if not todays_matches_message_id or not ODDS_API_KEY:
-        return
-
-    channel = discord.utils.get(bot.get_all_channels(), name=TARGET_CHANNEL_NAME)
-    if not channel:
-        return
-
-    try:
-        msg = await channel.fetch_message(todays_matches_message_id)
-    except Exception:
-        return
-
-    if not msg.embeds:
-        return
-
-    embed = msg.embeds[0]
-    updated = False
-    new_fields = []
-
-    for field in embed.fields:
-        league_name = field.name
-        league_key = LEAGUES.get(league_name)
-        if not league_key:
-            new_fields.append(field)
-            continue
-
-        url = f"[https://api.the-odds-api.com/v4/sports/](https://api.the-odds-api.com/v4/sports/){league_key}/scores/?apiKey={ODDS_API_KEY}&daysFrom=1"
-        try:
-            response = requests.get(url, timeout=5).json()
-            if isinstance(response, list):
-                match_lines = field.value.split("\n")
-                new_match_lines = []
-                for line in match_lines:
-                    line_updated = False
-                    for m in response:
-                        home = m.get("home_team")
-                        away = m.get("away_team")
-                        
-                        if home and away and home in line and away in line:
-                            completed = m.get("completed", False)
-                            scores = m.get("scores")
-                            
-                            if completed and scores:
-                                home_score = next((s["score"] for s in scores if s["name"] == home), "0")
-                                away_score = next((s["score"] for s in scores if s["name"] == away), "0")
-                                new_match_lines.append(f"• {home} vs {away} ➔ **🏁 FINITA ({home_score}-{away_score})**")
-                                updated = True
-                                line_updated = True
-                                break
-                            elif m.get("is_live", False):
-                                new_match_lines.append(f"• {home} vs {away} ➔ **🔴 LIVE IN CORSO**")
-                                updated = True
-                                line_updated = True
-                                break
-                    if not line_updated:
-                        new_match_lines.append(line)
-                
-                new_fields.append(discord.EmbedField(name=league_name, value="\n".join(new_match_lines), inline=False))
-            else:
-                new_fields.append(field)
-        except Exception:
-            new_fields.append(field)
-
-    if updated:
-        embed.clear_fields()
-        for f in new_fields:
-            embed.add_field(name=f.name, value=f.value, inline=f.inline)
-        try:
-            await msg.edit(embed=embed)
-        except Exception:
-            pass
-
-@tasks.loop(time=time(hour=0, minute=0, tzinfo=timezone.utc))
-async def daily_midnight_task():
-    await fetch_and_post_matches()
-
-@bot.command(name="aggiorna_partite")
-@commands.has_permissions(administrator=True)
-async def cmd_aggiorna_partite(ctx):
-    await ctx.send("🔄 Aggiornamento manuale in corso...")
-    await fetch_and_post_matches()
-    try: await ctx.message.delete()
-    except: pass
-
+# --- MODALE E VIEW PIRAMIDE ---
 class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
     initial_cash = discord.ui.TextInput(label="Cassa Iniziale (Minimo 5€)", placeholder="Es. 20 o 50", min_length=1, max_length=5, required=True)
     invited_users = discord.ui.TextInput(label="Tagga amici o indica numero (es. @Nome o +3)", placeholder="Es. @Amico oppure +3", required=False, max_length=100)
@@ -566,6 +344,7 @@ async def setup_piramide(ctx):
     try: await ctx.message.delete()
     except: pass
 
+# --- COMANDI DELLA STANZA ---
 @bot.command(name="gioca")
 async def cmd_gioca(ctx, importo: float = None):
     if ctx.channel.id not in active_pyramids:
@@ -673,6 +452,7 @@ async def cmd_out(ctx):
     await asyncio.sleep(5)
     await ctx.channel.delete()
 
+# --- AVVIO PRINCIPALE ---
 async def main():
     await start_web_server()
     token = os.environ.get("DISCORD_TOKEN")
