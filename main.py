@@ -3,23 +3,9 @@ import asyncio
 import random
 import string
 from datetime import datetime, time, timezone
-from aiohttp import web
 import discord
 from discord.ext import commands, tasks
 import requests
-
-# Mini server web integrato per Render (Keep-Alive)
-async def handle(request):
-    return web.Response(text="GK Betting Bot Online!")
-
-async def start_web_server():
-    app = web.Application()
-    app.router.add_get("/", handle)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
 
 # Inizializzazione Bot Discord
 intents = discord.Intents.default()
@@ -120,7 +106,7 @@ async def keep_alive_ping_log():
             # Invia il nuovo embed di health check
             embed = discord.Embed(
                 title="🤖 [GK BOT SYSTEM LOG]",
-                description="💓 **Health Check periodico:** Il bot è attivo e il server web risponde correttamente.",
+                description="💓 **Health Check periodico:** Il bot è attivo e operativo.",
                 color=discord.Color.teal(),
                 timestamp=datetime.now(timezone.utc)
             )
@@ -661,10 +647,9 @@ async def cmd_out(ctx):
     await ctx.channel.delete()
 
 
-async def main():
-    await start_web_server()
-    token = os.environ.get("DISCORD_TOKEN")
-    await bot.start(token)
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    token = os.environ.get("DISCORD_TOKEN")
+    if not token:
+        print("❌ ERRORE: Token di Discord non trovato nelle variabili d'ambiente!")
+    else:
+        bot.run(token)
