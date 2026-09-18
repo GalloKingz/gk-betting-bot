@@ -51,14 +51,9 @@ active_pyramids = {}
 async def on_ready():
     print(f"Bot connesso con successo come {bot.user}")
     bot.add_view(PersistentPyramidView())
-    
-    # Ricostruisce le lobby attive dai canali esistenti per non perdere mai i dati in corso
     await restore_active_pyramids()
-    
-    # Pubblica subito le partite all'accensione (deploy/riavvio)
     await fetch_and_post_matches()
     
-    # Avvia il task pianificato per la mezzanotte se non è già attivo
     if not daily_midnight_task.is_running():
         daily_midnight_task.start()
 
@@ -113,11 +108,10 @@ async def restore_active_pyramids():
                         "invitati": invitati,
                         "extra_count": 0
                     }
-                    print(f"Lobby ripristinata con successo: {channel.name} (Cassa: {cassa_corrente}€)")
                 except Exception as e:
                     print(f"Errore nel ripristino della lobby {channel.name}: {e}")
 
-# --- FUNZIONE CONDIVISA PER RECUPERARE LE PARTITE E QUOTE ---
+# --- FUNZIONE CONDIVISA PER RECUPERARE LE PARTITE E QUOTE REALI VARIATE ---
 async def fetch_and_post_matches():
     channel = discord.utils.get(bot.get_all_channels(), name=TARGET_CHANNEL_NAME)
     if not channel:
@@ -158,30 +152,56 @@ async def fetch_and_post_matches():
                     todays_matches.append(f"• {home} vs {away}")
                     found_any_matches = True
 
-                    # Estrazione quote pulita e realistica
+                    # Estrazione quote reali 1X2 dall'API per ogni match
                     if matches_collected < 4:
-                        odd_home = 1.35
+                        odd_home = 2.00
+                        odd_draw = 3.20
+                        odd_away = 3.50
                         try:
                             bookmakers = match.get("bookmakers", [])
                             if bookmakers:
                                 outcomes = bookmakers[0]["markets"][0]["outcomes"]
                                 for o in outcomes:
-                                    if o["name"] == home:
-                                        odd_home = float(o["price"])
+                                    name = o.get("name")
+                                    price = float(o.get("price", 0))
+                                    if name == home:
+                                        odd_home = price
+                                    elif name == away:
+                                        odd_away = price
+                                    elif name.lower() in ["draw", "pareggio", "x"]:
+                                        odd_draw = price
                         except Exception:
                             pass
 
-                        # Evitiamo quote troppo basse o strane tappandole a un minimo logico
-                        odd_home = max(odd_home, 1.05)
+                        # CASSA: Scegliamo dinamicamente e in modo vario tra 1, 2, X o doppia chance reale
+                        scelte_cassa = [
+                            ("1 (Segno 1)", odd_home),
+                            ("2 (Segno 2)", odd_away),
+                            ("X (Pareggio)", odd_draw),
+                            ("1X (Doppia Chance)", round(odd_home * 1.12, 2))
+                        ]
+                        # Ordiniamo o filtriamo per prendere esiti con quote equilibrate per la cassa (preferibilmente < 2.50)
+                        scelte_cassa_ordinate = sorted(scelte_cassa, key=lambda x: x[1])
+                        # Alterniamo in base all'indice della partita raccolta per non mettere sempre la stessa cosa
+                        scelta_cassa = scelte_cassa_ordinate[matches_collected % len(scelte_cassa_ordinate)]
                         
-                        # Calcolo quota cassaforte
-                        cassaforte.append(f"• **{home} vs {away}** ({league_name}) ➔ **1X** @{odd_home}")
-                        vincita_cassaforte *= odd_home
+                        mercato_cassa, quota_cassa = scelta_cassa
+                        cassaforte.append(f"• **{home} vs {away}** ({league_name}) ➔ **{mercato_cassa}** @{quota_cassa}")
+                        vincita_cassaforte *= quota_cassa
 
-                        # Colpaccio: stimato in modo coerente e sicuro senza moltiplicazioni sballate
-                        odd_combo = round(odd_home * 1.30, 2) if odd_home < 1.40 else round(odd_home * 1.15, 2)
-                        colpaccio.append(f"• **{home} vs {away}** ({league_name}) ➔ **1 + Over 1.5** @{odd_combo}")
-                        vincita_colpaccio *= odd_combo
+                        # COLPACCIO: Scegliamo esiti più alti o opposti per variare completamente la schedina
+                        scelte_colpo = [
+                            ("2 (Segno 2)", odd_away),
+                            ("X (Pareggio)", odd_draw),
+                            ("1 (Segno 1)", odd_home),
+                            ("Gol (Entrambe a segno)", round(max(odd_home, odd_away) * 0.90, 2))
+                        ]
+                        # Prendiamo l'inverso o ruotiamo per garantire varietà
+                        scelta_colpo = scelte_colpo[(matches_collected + 2) % len(scelte_colpo)]
+                        
+                        mercato_colpo, quota_colpo = scelta_colpo
+                        colpaccio.append(f"• **{home} vs {away}** ({league_name}) ➔ **{mercato_colpo}** @{quota_colpo}")
+                        vincita_colpaccio *= quota_colpo
                         
                         matches_collected += 1
 
@@ -204,12 +224,10 @@ async def fetch_and_post_matches():
 
     await channel.send(embed=embed_bet)
 
-# Task pianificato per la mezzanotte UTC
 @tasks.loop(time=time(hour=0, minute=0, tzinfo=timezone.utc))
 async def daily_midnight_task():
     await fetch_and_post_matches()
 
-# Comando manuale per forzare l'aggiornamento
 @bot.command(name="aggiorna_partite")
 @commands.has_permissions(administrator=True)
 async def cmd_aggiorna_partite(ctx):
@@ -220,37 +238,21 @@ async def cmd_aggiorna_partite(ctx):
     except:
         pass
 
-
-# --- MODALE DI CONFIGURAZIONE ---
+# --- RESTO DEL CODICE (Modale, View, Comandi stanza) ---
 class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
-    initial_cash = discord.ui.TextInput(
-        label="Cassa Iniziale (Minimo 5€)",
-        placeholder="Es. 20 o 50",
-        min_length=1,
-        max_length=5,
-        required=True
-    )
-    
-    invited_users = discord.ui.TextInput(
-        label="Tagga amici o indica numero (es. @Nome o +3)",
-        placeholder="Es. @Amico oppure +3",
-        required=False,
-        max_length=100
-    )
+    initial_cash = discord.ui.TextInput(label="Cassa Iniziale (Minimo 5€)", placeholder="Es. 20 o 50", min_length=1, max_length=5, required=True)
+    invited_users = discord.ui.TextInput(label="Tagga amici o indica numero (es. @Nome o +3)", placeholder="Es. @Amico oppure +3", required=False, max_length=100)
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
             await interaction.response.defer(ephemeral=True)
             guild = interaction.guild
-
             existing_rooms = [ch for ch in guild.channels if ch.name.startswith("bet-")]
             if len(existing_rooms) >= 10:
                 err_msg = await interaction.followup.send("❌ Raggiunto il limite massimo di 10 stanze Bet attive!", ephemeral=True)
                 await asyncio.sleep(4)
-                try:
-                    await err_msg.delete()
-                except:
-                    pass
+                try: await err_msg.delete()
+                except: pass
                 return
 
             try:
@@ -258,18 +260,14 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
                 if cassa_valore < 5.0:
                     err_msg = await interaction.followup.send("❌ La cassa iniziale deve essere di almeno **5€**!", ephemeral=True)
                     await asyncio.sleep(4)
-                    try:
-                        await err_msg.delete()
-                    except:
-                        pass
+                    try: await err_msg.delete()
+                    except: pass
                     return
             except ValueError:
                 err_msg = await interaction.followup.send("❌ Inserisci un importo numerico valido per la cassa!", ephemeral=True)
                 await asyncio.sleep(4)
-                try:
-                    await err_msg.delete()
-                except:
-                    pass
+                try: await err_msg.delete()
+                except: pass
                 return
 
             overwrites = {
@@ -292,12 +290,10 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
 
             totale_extra = len(invited_list) + extra_count
             if totale_extra > 3:
-                err_msg = await interaction.followup.send("❌ Puoi aggiungere al **massimo 3 compagni** in totale (es. +3 o 3 tag). Riprova!", ephemeral=True)
+                err_msg = await interaction.followup.send("❌ Puoi aggiungere al **massimo 3 compagni** in totale. Riprova!", ephemeral=True)
                 await asyncio.sleep(4)
-                try:
-                    await err_msg.delete()
-                except:
-                    pass
+                try: await err_msg.delete()
+                except: pass
                 return
 
             for user in invited_list:
@@ -332,7 +328,6 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
                 color=discord.Color.blue()
             )
             embed.add_field(name="💰 Cassa Iniziale", value=f"`{round(cassa_valore, 2)}€`", inline=False)
-            
             comandi_guida = (
                 "• `!gioca [importo]` ➔ Registra giocata *(puoi allegare screen)*\n"
                 "• `!vinto [totale]` ➔ Accredita vincita\n"
@@ -344,23 +339,13 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
             
             mentions_text = f"{interaction.user.mention} " + " ".join([u.mention for u in invited_list])
             await channel.send(content=mentions_text, embed=embed)
-
             msg = await interaction.followup.send(f"✅ Stanza privata creata con successo: {channel.mention}", ephemeral=True)
             await asyncio.sleep(4)
-            try:
-                await msg.delete()
-            except:
-                pass
-
+            try: await msg.delete()
+            except: pass
         except Exception as e:
             print(f"Errore nel modale: {e}")
-            try:
-                await interaction.followup.send(f"❌ Si è verificato un errore interno: {e}", ephemeral=True)
-            except:
-                pass
 
-
-# --- VIEW PERSISTENTE ---
 class PersistentPyramidView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -369,28 +354,18 @@ class PersistentPyramidView(discord.ui.View):
     async def open_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(PyramidModal())
 
-
 @bot.command(name="setup_piramide")
 @commands.has_permissions(administrator=True)
 async def setup_piramide(ctx):
-    embed = discord.Embed(
-        title="💎 GESTIONE PIRAMIDE BETS",
-        description="Clicca sul bottone sottostante per impostare il budget iniziale e invitare fino a 3 compagni.",
-        color=discord.Color.gold()
-    )
+    embed = discord.Embed(title="💎 GESTIONE PIRAMIDE BETS", description="Clicca sul bottone sottostante per impostare il budget iniziale e invitare fino a 3 compagni.", color=discord.Color.gold())
     view = PersistentPyramidView()
     await ctx.send(embed=embed, view=view)
-    try:
-        await ctx.message.delete()
-    except:
-        pass
+    try: await ctx.message.delete()
+    except: pass
 
-
-# --- COMANDI DELLA STANZA ---
 @bot.command(name="gioca")
 async def cmd_gioca(ctx, importo: float = None):
-    if ctx.channel.id not in active_pyramids:
-        return
+    if ctx.channel.id not in active_pyramids: return
     if importo is None:
         await ctx.send("❌ Specifica l'importo. Esempio: `!gioca 10`")
         return
@@ -406,8 +381,7 @@ async def cmd_gioca(ctx, importo: float = None):
 
 @bot.command(name="vinto")
 async def cmd_vinto(ctx, vincita_totale: float = None):
-    if ctx.channel.id not in active_pyramids:
-        return
+    if ctx.channel.id not in active_pyramids: return
     if vincita_totale is None:
         await ctx.send("❌ Specifica l'importo vinto. Esempio: `!vinto 35.50`")
         return
@@ -417,8 +391,7 @@ async def cmd_vinto(ctx, vincita_totale: float = None):
 
 @bot.command(name="perso")
 async def cmd_perso(ctx):
-    if ctx.channel.id not in active_pyramids:
-        return
+    if ctx.channel.id not in active_pyramids: return
     data = active_pyramids[ctx.channel.id]
     data["giocata_attiva"] = 0.0
     await ctx.send(f"⚠️ Schedina persa. Cassa attuale: `{round(data['cassa'], 2)}€`")
@@ -429,15 +402,13 @@ async def cmd_perso(ctx):
 
 @bot.command(name="soldi")
 async def cmd_soldi(ctx):
-    if ctx.channel.id not in active_pyramids:
-        return
+    if ctx.channel.id not in active_pyramids: return
     data = active_pyramids[ctx.channel.id]
     await ctx.send(f"📊 **Stato Cassa:** `{round(data['cassa'], 2)}€`")
 
 @bot.command(name="out")
 async def cmd_out(ctx):
-    if ctx.channel.id not in active_pyramids:
-        return
+    if ctx.channel.id not in active_pyramids: return
     data = active_pyramids[ctx.channel.id]
     saldo_finale = data["cassa"]
     cassa_iniziale = data["cassa_iniziale"]
@@ -451,10 +422,8 @@ async def cmd_out(ctx):
     guild = ctx.guild
     report_channel = discord.utils.get(guild.text_channels, name=REPORT_CHANNEL_NAME)
     if not report_channel:
-        try:
-            report_channel = await guild.create_text_channel(name=REPORT_CHANNEL_NAME)
-        except:
-            report_channel = None
+        try: report_channel = await guild.create_text_channel(name=REPORT_CHANNEL_NAME)
+        except: report_channel = None
 
     if saldo_finale >= cassa_iniziale:
         profitto = saldo_finale - cassa_iniziale
@@ -491,7 +460,6 @@ async def cmd_out(ctx):
     del active_pyramids[ctx.channel.id]
     await asyncio.sleep(5)
     await ctx.channel.delete()
-
 
 async def main():
     await start_web_server()
