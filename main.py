@@ -30,7 +30,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 TARGET_CHANNEL_NAME = "📅・partite-e-pronostici" 
 REPORT_CHANNEL_NAME = "🏆・vincite-e-perdite"
-LOG_CHANNEL_NAME = "🤖・bot-log" # Puoi regolarlo se hai usato trattini o punti
+LOG_CHANNEL_NAME = "🤖-bot-log"
 
 LEAGUES = {
     "Champions League": "soccer_uefa_champions_league",
@@ -95,8 +95,8 @@ async def on_ready():
     if not keep_alive_ping_log.is_running():
         keep_alive_ping_log.start()
 
-# --- TASK DI HEALTH CHECK PERIODICO ---
-@tasks.loop(minutes=30)
+# --- TASK DI HEALTH CHECK PERIODICO (OGNI 10 MINUTI) ---
+@tasks.loop(minutes=10)
 async def keep_alive_ping_log():
     for guild in bot.guilds:
         await send_bot_log(guild, "💓 **Health Check periodico:** Il bot è attivo e il server web risponde correttamente.", discord.Color.teal())
