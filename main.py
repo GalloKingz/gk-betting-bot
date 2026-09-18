@@ -48,6 +48,7 @@ LEAGUES = {
 
 active_pyramids = {}
 todays_matches_message_id = None
+last_health_check_message_id = None  # Variabile per tracciare l'ultimo log di health check da ripulire
 
 # --- FUNZIONE AUSILIARIA PER SCRIVERE NEI LOG DEL BOT NELLA CATEGORIA OWNER ---
 async def send_bot_log(guild, message_text, color=discord.Color.blue()):
@@ -95,11 +96,39 @@ async def on_ready():
     if not keep_alive_ping_log.is_running():
         keep_alive_ping_log.start()
 
-# --- TASK DI HEALTH CHECK PERIODICO (OGNI 10 MINUTI) ---
+# --- TASK DI HEALTH CHECK PERIODICO (OGNI 10 MINUTI CON PULIZIA MESSAGGIO PRECEDENTE) ---
 @tasks.loop(minutes=10)
 async def keep_alive_ping_log():
+    global last_health_check_message_id
     for guild in bot.guilds:
-        await send_bot_log(guild, "💓 **Health Check periodico:** Il bot è attivo e il server web risponde correttamente.", discord.Color.teal())
+        try:
+            category = discord.utils.get(guild.categories, name="🛡️ OWNER & STAFF")
+            if not category:
+                continue
+            channel = discord.utils.get(category.text_channels, name=LOG_CHANNEL_NAME)
+            if not channel:
+                continue
+
+            # Cancella il log di health check precedente se esiste
+            if last_health_check_message_id:
+                try:
+                    old_msg = await channel.fetch_message(last_health_check_message_id)
+                    await old_msg.delete()
+                except Exception:
+                    pass
+
+            # Invia il nuovo embed di health check
+            embed = discord.Embed(
+                title="🤖 [GK BOT SYSTEM LOG]",
+                description="💓 **Health Check periodico:** Il bot è attivo e il server web risponde correttamente.",
+                color=discord.Color.teal(),
+                timestamp=datetime.now(timezone.utc)
+            )
+            new_msg = await channel.send(embed=embed)
+            last_health_check_message_id = new_msg.id
+
+        except Exception as e:
+            print(f"Errore nel task di health check: {e}")
 
 # --- FUNZIONE PER RIPRISTINARE LE LOBBY DOPO UN RIAVVIO ---
 async def restore_active_pyramids():
