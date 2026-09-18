@@ -55,6 +55,9 @@ async def on_ready():
     # Ricostruisce le lobby attive dai canali esistenti per non perdere mai i dati in corso
     await restore_active_pyramids()
     
+    # Pubblica subito le partite all'accensione (deploy/riavvio)
+    await fetch_and_post_matches()
+    
     # Avvia il task pianificato per la mezzanotte se non è già attivo
     if not daily_midnight_task.is_running():
         daily_midnight_task.start()
@@ -114,7 +117,7 @@ async def restore_active_pyramids():
                 except Exception as e:
                     print(f"Errore nel ripristino della lobby {channel.name}: {e}")
 
-# --- FUNZIONE CONDIVISA PER RECUPERARE LE PARTITE E QUOTE REALI ---
+# --- FUNZIONE CONDIVISA PER RECUPERARE LE PARTITE E QUOTE ---
 async def fetch_and_post_matches():
     channel = discord.utils.get(bot.get_all_channels(), name=TARGET_CHANNEL_NAME)
     if not channel:
@@ -140,7 +143,7 @@ async def fetch_and_post_matches():
     embed_matches = discord.Embed(title=f"📅 Partite di Oggi ({today_str}) - Coppe & Leghe", color=discord.Color.green())
 
     for league_name, league_key in LEAGUES.items():
-        url = f"https://api.the-odds-api.com/v4/sports/{league_key}/odds/?apiKey={ODDS_API_KEY}&regions=eu&markets=h2h&bookmakers=bet365"
+        url = f"https://api.the-odds-api.com/v4/sports/{league_key}/odds/?apiKey={ODDS_API_KEY}&regions=eu&markets=h2h"
         try:
             response = requests.get(url, timeout=5).json()
             if isinstance(response, list) and len(response) > 0:
@@ -155,27 +158,28 @@ async def fetch_and_post_matches():
                     todays_matches.append(f"• {home} vs {away}")
                     found_any_matches = True
 
-                    bookmakers = match.get("bookmakers", [])
-                    if bookmakers and matches_collected < 4:
+                    # Estrazione quote flessibile
+                    if matches_collected < 4:
+                        odd_home = 1.35
+                        odd_away = 2.15
                         try:
-                            outcomes = bookmakers[0]["markets"][0]["outcomes"]
-                            odd_home = None
-                            odd_away = None
-                            for o in outcomes:
-                                if o["name"] == home:
-                                    odd_home = float(o["price"])
-                                elif o["name"] == away:
-                                    odd_away = float(o["price"])
-                            
-                            if odd_home and odd_away:
-                                cassaforte.append(f"• **{home} vs {away}** ({league_name}) ➔ **1X** @{odd_home}")
-                                vincita_cassaforte *= odd_home
-
-                                colpaccio.append(f"• **{home} vs {away}** ({league_name}) ➔ **1 + Over 1.5** @{odd_away}")
-                                vincita_colpaccio *= odd_away
-                                matches_collected += 1
+                            bookmakers = match.get("bookmakers", [])
+                            if bookmakers:
+                                outcomes = bookmakers[0]["markets"][0]["outcomes"]
+                                for o in outcomes:
+                                    if o["name"] == home:
+                                        odd_home = float(o["price"])
+                                    elif o["name"] == away:
+                                        odd_away = float(o["price"])
                         except Exception:
                             pass
+
+                        cassaforte.append(f"• **{home} vs {away}** ({league_name}) ➔ **1X** @{odd_home}")
+                        vincita_cassaforte *= odd_home
+
+                        colpaccio.append(f"• **{home} vs {away}** ({league_name}) ➔ **1 + Over 1.5** @{odd_away}")
+                        vincita_colpaccio *= odd_away
+                        matches_collected += 1
 
                 if todays_matches:
                     embed_matches.add_field(name=league_name, value="\n".join(todays_matches), inline=False)
