@@ -28,8 +28,8 @@ intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
-TARGET_CHANNEL_NAME = "partite-e-pronostici" 
-REPORT_CHANNEL_NAME = "vincite-e-perdite"
+TARGET_CHANNEL_NAME = "📅-partite-e-pronostici" 
+REPORT_CHANNEL_NAME = "🏆-vincite-e-perdite"
 
 LEAGUES = {
     "Champions League": "soccer_uefa_champions_league",
@@ -46,7 +46,6 @@ LEAGUES = {
 }
 
 active_pyramids = {}
-# Salviamo i riferimenti ai messaggi pubblicati per poterli aggiornare coi risultati live
 todays_matches_message_id = None
 
 @bot.event
@@ -157,7 +156,6 @@ async def fetch_and_post_matches():
                     todays_matches.append(f"• {home} vs {away} ⏳ *In programma*")
                     found_any_matches = True
 
-                    # Estrazione quote reali 1X2 dall'API
                     if matches_collected < 4:
                         odd_home = 2.00
                         odd_draw = 3.20
@@ -225,7 +223,7 @@ async def fetch_and_post_matches():
 
     await channel.send(embed=embed_bet)
 
-# --- TASK AUTOMATICO IN BACKGROUND PER AGGIORNARE I RISULTATI LIVE ---
+# --- TASK LIVE RISULTATI (OGNI 15 MINUTI) ---
 @tasks.loop(minutes=15)
 async def check_match_scores():
     global todays_matches_message_id
@@ -238,8 +236,6 @@ async def check_match_scores():
 
     try:
         msg = await channel.fetch_message(todays_matches_message_id)
-    except discord.NotFound:
-        return
     except Exception:
         return
 
@@ -258,7 +254,6 @@ async def check_match_scores():
             new_fields.append(field)
             continue
 
-        # Chiamata all'endpoint Scores dell'API per verificare risultati e match live
         url = f"https://api.the-odds-api.com/v4/sports/{league_key}/scores/?apiKey={ODDS_API_KEY}&daysFrom=1"
         try:
             response = requests.get(url, timeout=5).json()
@@ -322,15 +317,29 @@ async def cmd_aggiorna_partite(ctx):
     except:
         pass
 
-# --- RESTO DEL CODICE (Modale, View, Comandi stanza) ---
+
+# --- MODALE DI CONFIGURAZIONE ---
 class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
-    initial_cash = discord.ui.TextInput(label="Cassa Iniziale (Minimo 5€)", placeholder="Es. 20 o 50", min_length=1, max_length=5, required=True)
-    invited_users = discord.ui.TextInput(label="Tagga amici o indica numero (es. @Nome o +3)", placeholder="Es. @Amico oppure +3", required=False, max_length=100)
+    initial_cash = discord.ui.TextInput(
+        label="Cassa Iniziale (Minimo 5€)",
+        placeholder="Es. 20 o 50",
+        min_length=1,
+        max_length=5,
+        required=True
+    )
+    
+    invited_users = discord.ui.TextInput(
+        label="Tagga amici o indica numero (es. @Nome o +3)",
+        placeholder="Es. @Amico oppure +3",
+        required=False,
+        max_length=100
+    )
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
             await interaction.response.defer(ephemeral=True)
             guild = interaction.guild
+
             existing_rooms = [ch for ch in guild.channels if ch.name.startswith("bet-")]
             if len(existing_rooms) >= 10:
                 err_msg = await interaction.followup.send("❌ Raggiunto il limite massimo di 10 stanze Bet attive!", ephemeral=True)
@@ -412,6 +421,7 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
                 color=discord.Color.blue()
             )
             embed.add_field(name="💰 Cassa Iniziale", value=f"`{round(cassa_valore, 2)}€`", inline=False)
+            
             comandi_guida = (
                 "• `!gioca [importo]` ➔ Registra giocata *(puoi allegare screen)*\n"
                 "• `!vinto [totale]` ➔ Accredita vincita\n"
@@ -423,13 +433,17 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
             
             mentions_text = f"{interaction.user.mention} " + " ".join([u.mention for u in invited_list])
             await channel.send(content=mentions_text, embed=embed)
+
             msg = await interaction.followup.send(f"✅ Stanza privata creata con successo: {channel.mention}", ephemeral=True)
             await asyncio.sleep(4)
             try: await msg.delete()
             except: pass
+
         except Exception as e:
             print(f"Errore nel modale: {e}")
 
+
+# --- VIEW PERSISTENTE ---
 class PersistentPyramidView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -438,18 +452,26 @@ class PersistentPyramidView(discord.ui.View):
     async def open_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(PyramidModal())
 
+
 @bot.command(name="setup_piramide")
 @commands.has_permissions(administrator=True)
 async def setup_piramide(ctx):
-    embed = discord.Embed(title="💎 GESTIONE PIRAMIDE BETS", description="Clicca sul bottone sottostante per impostare il budget iniziale e invitare fino a 3 compagni.", color=discord.Color.gold())
+    embed = discord.Embed(
+        title="💎 GESTIONE PIRAMIDE BETS",
+        description="Clicca sul bottone sottostante per impostare il budget iniziale e invitare fino a 3 compagni.",
+        color=discord.Color.gold()
+    )
     view = PersistentPyramidView()
     await ctx.send(embed=embed, view=view)
     try: await ctx.message.delete()
     except: pass
 
+
+# --- COMANDI DELLA STANZA ---
 @bot.command(name="gioca")
 async def cmd_gioca(ctx, importo: float = None):
-    if ctx.channel.id not in active_pyramids: return
+    if ctx.channel.id not in active_pyramids:
+        return
     if importo is None:
         await ctx.send("❌ Specifica l'importo. Esempio: `!gioca 10`")
         return
@@ -465,7 +487,8 @@ async def cmd_gioca(ctx, importo: float = None):
 
 @bot.command(name="vinto")
 async def cmd_vinto(ctx, vincita_totale: float = None):
-    if ctx.channel.id not in active_pyramids: return
+    if ctx.channel.id not in active_pyramids:
+        return
     if vincita_totale is None:
         await ctx.send("❌ Specifica l'importo vinto. Esempio: `!vinto 35.50`")
         return
@@ -475,7 +498,8 @@ async def cmd_vinto(ctx, vincita_totale: float = None):
 
 @bot.command(name="perso")
 async def cmd_perso(ctx):
-    if ctx.channel.id not in active_pyramids: return
+    if ctx.channel.id not in active_pyramids:
+        return
     data = active_pyramids[ctx.channel.id]
     data["giocata_attiva"] = 0.0
     await ctx.send(f"⚠️ Schedina persa. Cassa attuale: `{round(data['cassa'], 2)}€`")
@@ -486,13 +510,15 @@ async def cmd_perso(ctx):
 
 @bot.command(name="soldi")
 async def cmd_soldi(ctx):
-    if ctx.channel.id not in active_pyramids: return
+    if ctx.channel.id not in active_pyramids:
+        return
     data = active_pyramids[ctx.channel.id]
     await ctx.send(f"📊 **Stato Cassa:** `{round(data['cassa'], 2)}€`")
 
 @bot.command(name="out")
 async def cmd_out(ctx):
-    if ctx.channel.id not in active_pyramids: return
+    if ctx.channel.id not in active_pyramids:
+        return
     data = active_pyramids[ctx.channel.id]
     saldo_finale = data["cassa"]
     cassa_iniziale = data["cassa_iniziale"]
@@ -506,8 +532,10 @@ async def cmd_out(ctx):
     guild = ctx.guild
     report_channel = discord.utils.get(guild.text_channels, name=REPORT_CHANNEL_NAME)
     if not report_channel:
-        try: report_channel = await guild.create_text_channel(name=REPORT_CHANNEL_NAME)
-        except: report_channel = None
+        try:
+            report_channel = await guild.create_text_channel(name=REPORT_CHANNEL_NAME)
+        except:
+            report_channel = None
 
     if saldo_finale >= cassa_iniziale:
         profitto = saldo_finale - cassa_iniziale
@@ -544,6 +572,7 @@ async def cmd_out(ctx):
     del active_pyramids[ctx.channel.id]
     await asyncio.sleep(5)
     await ctx.channel.delete()
+
 
 async def main():
     await start_web_server()
