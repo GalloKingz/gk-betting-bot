@@ -70,9 +70,7 @@ async def restore_active_pyramids():
                     host = guild.owner
                     invitati = []
                     
-                    # Legge la cronologia del canale per recuperare i dati reali
                     async for message in channel.history(limit=50, oldest_first=True):
-                        # Cerca il messaggio iniziale con l'embed della stanza
                         if message.embeds:
                             embed = message.embeds[0]
                             if embed.title and "Sessione Bet" in embed.title:
@@ -88,7 +86,6 @@ async def restore_active_pyramids():
                                         except:
                                             pass
                         
-                        # Legge i comandi eseguiti in precedenza per aggiornare la cassa esatta
                         if message.content.startswith("!"):
                             parts = message.content.split()
                             cmd = parts[0].lower()
@@ -117,7 +114,7 @@ async def restore_active_pyramids():
                 except Exception as e:
                     print(f"Errore nel ripristino della lobby {channel.name}: {e}")
 
-# --- FUNZIONE CONDIVISA PER RECUPERARE LE PARTITE ---
+# --- FUNZIONE CONDIVISA PER RECUPERARE LE PARTITE E QUOTE REALI ---
 async def fetch_and_post_matches():
     channel = discord.utils.get(bot.get_all_channels(), name=TARGET_CHANNEL_NAME)
     if not channel:
@@ -158,9 +155,8 @@ async def fetch_and_post_matches():
                     todays_matches.append(f"• {home} vs {away}")
                     found_any_matches = True
 
-                    # Cerca le quote reali dall'API senza usare valori finti di fallback
                     bookmakers = match.get("bookmakers", [])
-                    if bookmakers:
+                    if bookmakers and matches_collected < 4:
                         try:
                             outcomes = bookmakers[0]["markets"][0]["outcomes"]
                             odd_home = None
@@ -171,8 +167,7 @@ async def fetch_and_post_matches():
                                 elif o["name"] == away:
                                     odd_away = float(o["price"])
                             
-                            # Se troviamo le quote reali e non abbiamo ancora riempito la schedina
-                            if odd_home and odd_away and matches_collected < 4:
+                            if odd_home and odd_away:
                                 cassaforte.append(f"• **{home} vs {away}** ({league_name}) ➔ **1X** @{odd_home}")
                                 vincita_cassaforte *= odd_home
 
