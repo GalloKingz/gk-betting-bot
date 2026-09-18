@@ -28,8 +28,9 @@ intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
-TARGET_CHANNEL_NAME = "📅-partite-e-pronostici" 
-REPORT_CHANNEL_NAME = "🏆-vincite-e-perdite"
+TARGET_CHANNEL_NAME = "📅・partite-e-pronostici" 
+REPORT_CHANNEL_NAME = "🏆・vincite-e-perdite"
+LOG_CHANNEL_NAME = "🤖・bot-log" # Puoi regolarlo se hai usato trattini o punti
 
 LEAGUES = {
     "Champions League": "soccer_uefa_champions_league",
@@ -48,6 +49,35 @@ LEAGUES = {
 active_pyramids = {}
 todays_matches_message_id = None
 
+# --- FUNZIONE AUSILIARIA PER SCRIVERE NEI LOG DEL BOT NELLA CATEGORIA OWNER ---
+async def send_bot_log(guild, message_text, color=discord.Color.blue()):
+    try:
+        category = discord.utils.get(guild.categories, name="🛡️ OWNER & STAFF")
+        if not category:
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            }
+            category = await guild.create_category(name="🛡️ OWNER & STAFF", overwrites=overwrites)
+
+        channel = discord.utils.get(category.text_channels, name=LOG_CHANNEL_NAME)
+        if not channel:
+            channel = discord.utils.get(guild.text_channels, name=LOG_CHANNEL_NAME)
+            if channel:
+                await channel.edit(category=category)
+            else:
+                channel = await guild.create_text_channel(name=LOG_CHANNEL_NAME, category=category)
+        
+        embed = discord.Embed(
+            title="🤖 [GK BOT SYSTEM LOG]",
+            description=message_text,
+            color=color,
+            timestamp=datetime.now(timezone.utc)
+        )
+        await channel.send(embed=embed)
+    except Exception as e:
+        print(f"Errore nell'invio del log su Discord: {e}")
+
 @bot.event
 async def on_ready():
     print(f"Bot connesso con successo come {bot.user}")
@@ -55,10 +85,21 @@ async def on_ready():
     await restore_active_pyramids()
     await fetch_and_post_matches()
     
+    for guild in bot.guilds:
+        await send_bot_log(guild, f"🟢 **Bot avviato con successo!** Connesso come `{bot.user}`. Sistemi attivi.", discord.Color.green())
+
     if not daily_midnight_task.is_running():
         daily_midnight_task.start()
     if not check_match_scores.is_running():
         check_match_scores.start()
+    if not keep_alive_ping_log.is_running():
+        keep_alive_ping_log.start()
+
+# --- TASK DI HEALTH CHECK PERIODICO ---
+@tasks.loop(minutes=30)
+async def keep_alive_ping_log():
+    for guild in bot.guilds:
+        await send_bot_log(guild, "💓 **Health Check periodico:** Il bot è attivo e il server web risponde correttamente.", discord.Color.teal())
 
 # --- FUNZIONE PER RIPRISTINARE LE LOBBY DOPO UN RIAVVIO ---
 async def restore_active_pyramids():
@@ -114,7 +155,7 @@ async def restore_active_pyramids():
                 except Exception as e:
                     print(f"Errore nel ripristino della lobby {channel.name}: {e}")
 
-# --- FUNZIONE CONDIVISA PER RECUPERARE LE PARTITE E QUOTE REALI ---
+# --- FUNZIONE CONDIVISA PER LE PARTITE E QUOTE REALI ---
 async def fetch_and_post_matches():
     global todays_matches_message_id
     channel = discord.utils.get(bot.get_all_channels(), name=TARGET_CHANNEL_NAME)
@@ -127,7 +168,8 @@ async def fetch_and_post_matches():
         pass
 
     if not ODDS_API_KEY:
-        await channel.send("⚠️ Chiave `ODDS_API_KEY` non configurata nelle variabili d'ambiente di Render!")
+        for guild in bot.guilds:
+            await send_bot_log(guild, "⚠️ **Attenzione:** Chiave `ODDS_API_KEY` non configurata nelle variabili d'ambiente!", discord.Color.orange())
         return
 
     today_str = datetime.now().strftime("%Y-%m-%d")
@@ -222,8 +264,11 @@ async def fetch_and_post_matches():
     embed_bet.add_field(name="🚀 IL COLPACCIO (Schedina 5€)", value=valore_colpo, inline=False)
 
     await channel.send(embed=embed_bet)
+    
+    for guild in bot.guilds:
+        await send_bot_log(guild, "🔄 **Partite aggiornate:** Raccolti match e quote reali per la data odierna.", discord.Color.blue())
 
-# --- TASK LIVE RISULTATI (OGNI 15 MINUTI) ---
+# --- TASK LIVE RISULTATI ---
 @tasks.loop(minutes=15)
 async def check_match_scores():
     global todays_matches_message_id
@@ -300,6 +345,8 @@ async def check_match_scores():
             embed.add_field(name=f.name, value=f.value, inline=f.inline)
         try:
             await msg.edit(embed=embed)
+            for guild in bot.guilds:
+                await send_bot_log(guild, "⚽ **Controllo Live:** Risultati aggiornati nel canale pronostici.", discord.Color.blue())
         except Exception:
             pass
 
@@ -310,7 +357,7 @@ async def daily_midnight_task():
 @bot.command(name="aggiorna_partite")
 @commands.has_permissions(administrator=True)
 async def cmd_aggiorna_partite(ctx):
-    await ctx.send("🔄 Aggiornamento manuale delle partite e dei risultati in corso...")
+    await ctx.send("🔄 Aggiornamento manuale in corso...")
     await fetch_and_post_matches()
     try:
         await ctx.message.delete()
@@ -392,10 +439,8 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
             for user in invited_list:
                 overwrites[user] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
 
-            # CERCA LA CATEGORIA "STANZE PRIVACY" (anche con emoji)
             category = discord.utils.get(guild.categories, name="STANZE PRIVACY")
             if not category:
-                # Cerca in modo flessibile se contiene "STANZE PRIVACY"
                 for cat in guild.categories:
                     if "STANZE PRIVACY" in cat.name.upper():
                         category = cat
@@ -442,10 +487,12 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
             mentions_text = f"{interaction.user.mention} " + " ".join([u.mention for u in invited_list])
             await channel.send(content=mentions_text, embed=embed)
 
-            msg = await interaction.followup.send(f"✅ Stanza privata creata con successo: {channel.mention}", ephemeral=True)
+            msg = await interaction.followup.send(f"✅ Stanza privata creata: {channel.mention}", ephemeral=True)
             await asyncio.sleep(4)
             try: await msg.delete()
             except: pass
+            
+            await send_bot_log(guild, f"📂 **Nuova Lobby:** `{channel_full_name}` aperta da {interaction.user.name} con cassa `{cassa_valore}€`.", discord.Color.purple())
 
         except Exception as e:
             print(f"Errore nel modale: {e}")
@@ -466,7 +513,7 @@ class PersistentPyramidView(discord.ui.View):
 async def setup_piramide(ctx):
     embed = discord.Embed(
         title="💎 GESTIONE PIRAMIDE BETS",
-        description="Clicca sul bottone sottostante per impostare il budget iniziale e invitare fino a 3 compagni.",
+        description="Clicca sul bottone per impostare il budget iniziale e invitare fino a 3 compagni.",
         color=discord.Color.gold()
     )
     view = PersistentPyramidView()
@@ -577,6 +624,9 @@ async def cmd_out(ctx):
         await report_channel.send(content=tag_membri, embed=embed_report)
 
     await ctx.send("🔒 **Sessione chiusa.** Report inviato. Chiusura canale tra 5 secondi...")
+    
+    await send_bot_log(guild, f"🔒 **Lobby chiusa:** `{ctx.channel.name}` chiusa. Saldo finale: `{saldo_finale}€`.", discord.Color.orange())
+    
     del active_pyramids[ctx.channel.id]
     await asyncio.sleep(5)
     await ctx.channel.delete()
