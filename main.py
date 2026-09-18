@@ -46,6 +46,8 @@ LEAGUES = {
 }
 
 active_pyramids = {}
+# Salviamo i riferimenti ai messaggi pubblicati per poterli aggiornare coi risultati live
+todays_matches_message_id = None
 
 @bot.event
 async def on_ready():
@@ -56,6 +58,8 @@ async def on_ready():
     
     if not daily_midnight_task.is_running():
         daily_midnight_task.start()
+    if not check_match_scores.is_running():
+        check_match_scores.start()
 
 # --- FUNZIONE PER RIPRISTINARE LE LOBBY DOPO UN RIAVVIO ---
 async def restore_active_pyramids():
@@ -111,8 +115,9 @@ async def restore_active_pyramids():
                 except Exception as e:
                     print(f"Errore nel ripristino della lobby {channel.name}: {e}")
 
-# --- FUNZIONE CONDIVISA PER RECUPERARE LE PARTITE E QUOTE REALI VARIATE ---
+# --- FUNZIONE CONDIVISA PER RECUPERARE LE PARTITE E QUOTE REALI ---
 async def fetch_and_post_matches():
+    global todays_matches_message_id
     channel = discord.utils.get(bot.get_all_channels(), name=TARGET_CHANNEL_NAME)
     if not channel:
         return
@@ -149,10 +154,10 @@ async def fetch_and_post_matches():
                     
                     home = match["home_team"]
                     away = match["away_team"]
-                    todays_matches.append(f"• {home} vs {away}")
+                    todays_matches.append(f"• {home} vs {away} ⏳ *In programma*")
                     found_any_matches = True
 
-                    # Estrazione quote reali 1X2 dall'API per ogni match
+                    # Estrazione quote reali 1X2 dall'API
                     if matches_collected < 4:
                         odd_home = 2.00
                         odd_draw = 3.20
@@ -173,30 +178,25 @@ async def fetch_and_post_matches():
                         except Exception:
                             pass
 
-                        # CASSA: Scegliamo dinamicamente e in modo vario tra 1, 2, X o doppia chance reale
                         scelte_cassa = [
                             ("1 (Segno 1)", odd_home),
                             ("2 (Segno 2)", odd_away),
                             ("X (Pareggio)", odd_draw),
                             ("1X (Doppia Chance)", round(odd_home * 1.12, 2))
                         ]
-                        # Ordiniamo o filtriamo per prendere esiti con quote equilibrate per la cassa (preferibilmente < 2.50)
                         scelte_cassa_ordinate = sorted(scelte_cassa, key=lambda x: x[1])
-                        # Alterniamo in base all'indice della partita raccolta per non mettere sempre la stessa cosa
                         scelta_cassa = scelte_cassa_ordinate[matches_collected % len(scelte_cassa_ordinate)]
                         
                         mercato_cassa, quota_cassa = scelta_cassa
                         cassaforte.append(f"• **{home} vs {away}** ({league_name}) ➔ **{mercato_cassa}** @{quota_cassa}")
                         vincita_cassaforte *= quota_cassa
 
-                        # COLPACCIO: Scegliamo esiti più alti o opposti per variare completamente la schedina
                         scelte_colpo = [
                             ("2 (Segno 2)", odd_away),
                             ("X (Pareggio)", odd_draw),
                             ("1 (Segno 1)", odd_home),
                             ("Gol (Entrambe a segno)", round(max(odd_home, odd_away) * 0.90, 2))
                         ]
-                        # Prendiamo l'inverso o ruotiamo per garantire varietà
                         scelta_colpo = scelte_colpo[(matches_collected + 2) % len(scelte_colpo)]
                         
                         mercato_colpo, quota_colpo = scelta_colpo
@@ -213,7 +213,8 @@ async def fetch_and_post_matches():
     if not found_any_matches:
         embed_matches.description = "Nessuna partita in programma oggi nei campionati monitorati."
 
-    await channel.send(embed=embed_matches)
+    sent_msg = await channel.send(embed=embed_matches)
+    todays_matches_message_id = sent_msg.id
 
     embed_bet = discord.Embed(title=f"🔥 PRONOSTICI DEL GIORNO ({today_str})", color=discord.Color.gold())
     valore_cassa = "\n".join(cassaforte) + f"\n\n💰 **Vincita Potenziale con 5€:** `{round(vincita_cassaforte, 2)}€`" if cassaforte else "Nessun match disponibile per la cassa."
@@ -224,6 +225,89 @@ async def fetch_and_post_matches():
 
     await channel.send(embed=embed_bet)
 
+# --- TASK AUTOMATICO IN BACKGROUND PER AGGIORNARE I RISULTATI LIVE ---
+@tasks.loop(minutes=15)
+async def check_match_scores():
+    global todays_matches_message_id
+    if not todays_matches_message_id or not ODDS_API_KEY:
+        return
+
+    channel = discord.utils.get(bot.get_all_channels(), name=TARGET_CHANNEL_NAME)
+    if not channel:
+        return
+
+    try:
+        msg = await channel.fetch_message(todays_matches_message_id)
+    except discord.NotFound:
+        return
+    except Exception:
+        return
+
+    if not msg.embeds:
+        return
+
+    embed = msg.embeds[0]
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    updated = False
+    new_fields = []
+
+    for field in embed.fields:
+        league_name = field.name
+        league_key = LEAGUES.get(league_name)
+        if not league_key:
+            new_fields.append(field)
+            continue
+
+        # Chiamata all'endpoint Scores dell'API per verificare risultati e match live
+        url = f"https://api.the-odds-api.com/v4/sports/{league_key}/scores/?apiKey={ODDS_API_KEY}&daysFrom=1"
+        try:
+            response = requests.get(url, timeout=5).json()
+            if isinstance(response, list):
+                match_lines = field.value.split("\n")
+                new_match_lines = []
+                for line in match_lines:
+                    line_updated = False
+                    for m in response:
+                        commence_time = m.get("commence_time", "")
+                        if not commence_time.startswith(today_str):
+                            continue
+                        home = m.get("home_team")
+                        away = m.get("away_team")
+                        
+                        if home and away and home in line and away in line:
+                            completed = m.get("completed", False)
+                            scores = m.get("scores")
+                            
+                            if completed and scores:
+                                home_score = next((s["score"] for s in scores if s["name"] == home), "0")
+                                away_score = next((s["score"] for s in scores if s["name"] == away), "0")
+                                new_match_lines.append(f"• {home} vs {away} ➔ **🏁 FINITA ({home_score}-{away_score})**")
+                                updated = True
+                                line_updated = True
+                                break
+                            elif m.get("is_live", False):
+                                new_match_lines.append(f"• {home} vs {away} ➔ **🔴 LIVE IN CORSO**")
+                                updated = True
+                                line_updated = True
+                                break
+                    if not line_updated:
+                        new_match_lines.append(line)
+                
+                new_fields.append(discord.EmbedField(name=league_name, value="\n".join(new_match_lines), inline=False))
+            else:
+                new_fields.append(field)
+        except Exception:
+            new_fields.append(field)
+
+    if updated:
+        embed.clear_fields()
+        for f in new_fields:
+            embed.add_field(name=f.name, value=f.value, inline=f.inline)
+        try:
+            await msg.edit(embed=embed)
+        except Exception:
+            pass
+
 @tasks.loop(time=time(hour=0, minute=0, tzinfo=timezone.utc))
 async def daily_midnight_task():
     await fetch_and_post_matches()
@@ -231,7 +315,7 @@ async def daily_midnight_task():
 @bot.command(name="aggiorna_partite")
 @commands.has_permissions(administrator=True)
 async def cmd_aggiorna_partite(ctx):
-    await ctx.send("🔄 Aggiornamento manuale delle partite in corso...")
+    await ctx.send("🔄 Aggiornamento manuale delle partite e dei risultati in corso...")
     await fetch_and_post_matches()
     try:
         await ctx.message.delete()
