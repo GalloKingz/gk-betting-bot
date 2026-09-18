@@ -392,7 +392,15 @@ class PyramidModal(discord.ui.Modal, title="Configura Nuova Sessione Bet"):
             for user in invited_list:
                 overwrites[user] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
 
-            category = interaction.channel.category
+            # CERCA LA CATEGORIA "STANZE PRIVACY" (anche con emoji)
+            category = discord.utils.get(guild.categories, name="STANZE PRIVACY")
+            if not category:
+                # Cerca in modo flessibile se contiene "STANZE PRIVACY"
+                for cat in guild.categories:
+                    if "STANZE PRIVACY" in cat.name.upper():
+                        category = cat
+                        break
+
             random_code = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
             channel_full_name = f"bet-{random_code}"
 
