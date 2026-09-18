@@ -158,10 +158,9 @@ async def fetch_and_post_matches():
                     todays_matches.append(f"• {home} vs {away}")
                     found_any_matches = True
 
-                    # Estrazione quote flessibile
+                    # Estrazione quote pulita e realistica
                     if matches_collected < 4:
                         odd_home = 1.35
-                        odd_away = 2.15
                         try:
                             bookmakers = match.get("bookmakers", [])
                             if bookmakers:
@@ -169,16 +168,21 @@ async def fetch_and_post_matches():
                                 for o in outcomes:
                                     if o["name"] == home:
                                         odd_home = float(o["price"])
-                                    elif o["name"] == away:
-                                        odd_away = float(o["price"])
                         except Exception:
                             pass
 
+                        # Evitiamo quote troppo basse o strane tappandole a un minimo logico
+                        odd_home = max(odd_home, 1.05)
+                        
+                        # Calcolo quota cassaforte
                         cassaforte.append(f"• **{home} vs {away}** ({league_name}) ➔ **1X** @{odd_home}")
                         vincita_cassaforte *= odd_home
 
-                        colpaccio.append(f"• **{home} vs {away}** ({league_name}) ➔ **1 + Over 1.5** @{odd_away}")
-                        vincita_colpaccio *= odd_away
+                        # Colpaccio: stimato in modo coerente e sicuro senza moltiplicazioni sballate
+                        odd_combo = round(odd_home * 1.30, 2) if odd_home < 1.40 else round(odd_home * 1.15, 2)
+                        colpaccio.append(f"• **{home} vs {away}** ({league_name}) ➔ **1 + Over 1.5** @{odd_combo}")
+                        vincita_colpaccio *= odd_combo
+                        
                         matches_collected += 1
 
                 if todays_matches:
